@@ -4,7 +4,7 @@
 
 | Command | Count | What it covers |
 |---|---|---|
-| `npm test` | 88 | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
+| `npm test` | 108 | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
 | `npm run test:browser` | 10 | Real Chrome, real `VideoPlayer`: host play → seek → keeps playing; pause → seek stays paused; drag seeks once; reload resumes shared state; media-key pause reaches guests; host transfer during playback; reconnection catch-up; **10-person sync measurement**; production build under the Content Security Policy |
 
 Browser tests use an in-page fake server (80 ms delay) instead of
@@ -86,5 +86,5 @@ video.
 | Host buffering | When the host's video resumes, the host re-sends its real position |
 | Video source fails | Player switches to the backup copy at the same position; if all fail, "Video unavailable" with Try Again |
 | Autoplay blocked | Viewer sees "The host is playing — click to join" |
-| Host closes laptop / disconnects | Presence shows them offline; after 1 minute guests see a banner; after 3 minutes without a server heartbeat, any member can **take over hosting** |
+| Host closes laptop / disconnects | Presence shows them offline; after 1 minute guests see a banner; after 3 minutes without any host activity (heartbeat, joining, becoming host, playback command, chat), any member can **take over hosting**. A host who just joined or just received the role is protected for 3 minutes |
 | Two actions at once | Database row locks: votes vs poll closing, host transfer vs takeover, member limit, chat rate limit |
