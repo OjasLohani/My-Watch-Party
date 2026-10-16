@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host Sync Harness</title>
+  </head>
+  <body style="background:#06070b">
+    <!--
+      Browser test harness: mounts the real VideoPlayer twice (host and
+      guest) with an in-page fake "server" instead of Supabase.
+      Used by tests/browser/host-sync.browser.mjs.
+    -->
+    <div id="root"></div>
+    <script type="module" src="./host-sync.tsx"></script>
+  </body>
+</html>

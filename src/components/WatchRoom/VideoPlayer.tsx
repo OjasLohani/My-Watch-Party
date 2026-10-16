@@ -9,7 +9,8 @@ import {
   RotateCcw,
   Shield,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import type { Movie } from '../../types';
 import type { PlaybackSnapshot } from '../../lib/playbackState';
@@ -92,13 +93,109 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   const [hint, setHint] = useState<string | null>(null);
   const driftRef = useRef<number | null>(null);
   const bufferingRef = useRef(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const lastHostAppliedVersionRef = useRef<number>(-1);
   const seekPublishTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // --- Local control (host, or anyone in a demo room) ---
+  // The player follows what the user ASKED for ("intent"), not whatever
+  // state the <video> element happens to be in. Seeking, buffering, a
+  // source switch or a reload can leave the element paused or stalled;
+  // ensureIntent() brings it back in line, and guests are always sent
+  // the intent, so host and guests cannot disagree.
+  const controlsAreLocal = !isSynced || isHost;
+  const [wantsPlaying, setWantsPlaying] = useState(false);
+  const wantsPlayingRef = useRef(false);
+  const setIntent = useCallback((playing: boolean) => {
+    wantsPlayingRef.current = playing;
+    setWantsPlaying(playing);
+  }, []);
+  /** Set while the element is (re)loading a source: pauses then are expected */
+  const reloadingRef = useRef(true);
+  /** pause() / play() calls made by this component (vs. media keys etc.) */
+  const ourPauseRef = useRef(false);
+  const ourPlayRef = useRef(false);
+  const playPendingRef = useRef(false);
+  // Latest values for timers and event handlers
+  const controlsAreLocalRef = useRef(controlsAreLocal);
+  const hasErrorRef = useRef(hasError);
+  const syncedHostRef = useRef(isSynced && isHost);
+  useEffect(() => {
+    controlsAreLocalRef.current = controlsAreLocal;
+    hasErrorRef.current = hasError;
+    syncedHostRef.current = isSynced && isHost;
+  });
+
+  // Progress bar: while dragging only the bar moves; the video seeks once
+  // on release (one network request instead of one per pixel).
+  const scrubbingRef = useRef(false);
+  const pendingSeekRef = useRef<number | null>(null);
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
 
   const showHint = useCallback((text: string) => {
     setHint(text);
     setTimeout(() => setHint(null), 2200);
   }, []);
+
+  /** Host only: send the intended state to everyone */
+  const publishState = useCallback((playing: boolean, position?: number) => {
+    const video = videoRef.current;
+    if (!syncedHostRef.current || !video) return;
+    clearTimeout(seekPublishTimerRef.current);
+    onHostChangeRef.current?.({ isPlaying: playing, position: position ?? video.currentTime });
+  }, []);
+
+  const playLocal = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !video.paused || playPendingRef.current) return;
+    ourPlayRef.current = true;
+    playPendingRef.current = true;
+    video.play().then(
+      () => {
+        playPendingRef.current = false;
+      },
+      (err: unknown) => {
+        playPendingRef.current = false;
+        ourPlayRef.current = false;
+        const name = err instanceof DOMException ? err.name : '';
+        if (name === 'NotAllowedError') {
+          // The browser refused (no user gesture yet): stay honest with guests
+          setIntent(false);
+          publishState(false);
+          setHint('The browser blocked playback — press Play again');
+          setTimeout(() => setHint(null), 2200);
+        }
+        // AbortError (interrupted by a seek or a new source) and source
+        // errors need nothing here: ensureIntent() retries once the video
+        // can play, and failed sources are handled by handleVideoError.
+      }
+    );
+  }, [publishState, setIntent]);
+
+  const pauseLocal = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.paused) return;
+    ourPauseRef.current = true;
+    video.pause();
+  }, []);
+
+  /** Makes the <video> element match the user's intent (local control only) */
+  const ensureIntent = useCallback(() => {
+    const video = videoRef.current;
+    if (!controlsAreLocalRef.current || !video || hasErrorRef.current || reloadingRef.current) return;
+    if (wantsPlayingRef.current) {
+      if (video.paused && !video.ended) playLocal();
+    } else {
+      pauseLocal();
+    }
+  }, [playLocal, pauseLocal]);
+
+  // Safety net: re-check every second that the player is doing what was asked
+  useEffect(() => {
+    if (!controlsAreLocal) return;
+    const timer = setInterval(ensureIntent, 1000);
+    return () => clearInterval(timer);
+  }, [controlsAreLocal, ensureIntent]);
 
   /**
    * Moves the local player onto the shared timeline.
@@ -147,14 +244,28 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     return () => clearInterval(timer);
   }, [isSynced, isHost, reconcile]);
 
+  /**
+   * Host: take over a shared state as the local intent (used when the
+   * player (re)loads, or when someone else published the state).
+   */
+  const adoptSnapshot = useCallback((snapshot: PlaybackSnapshot) => {
+    const video = videoRef.current;
+    if (!video || snapshot.movieId !== movie.id || video.readyState < 1) return;
+    const expected = expectedPosition(snapshot, Date.now() + clockOffsetMs, video.duration);
+    if (Math.abs(video.currentTime - expected) > 0.25) video.currentTime = expected;
+    setIntent(snapshot.isPlaying);
+    ensureIntent();
+  }, [movie.id, clockOffsetMs, setIntent, ensureIntent]);
+
   // Host: adopt shared states published by someone else (previous host,
-  // own earlier session) once, without fighting local control afterwards.
+  // own earlier session) once; the host's own updates are never re-applied,
+  // so local and remote state cannot feed back into each other.
   useEffect(() => {
     if (!isSynced || !isHost || !playback) return;
     if (playback.version <= lastHostAppliedVersionRef.current) return;
     lastHostAppliedVersionRef.current = playback.version;
-    if (playback.updatedBy !== currentUser.id) reconcile(true);
-  }, [isSynced, isHost, playback, currentUser.id, reconcile]);
+    if (playback.updatedBy !== currentUser.id) adoptSnapshot(playback);
+  }, [isSynced, isHost, playback, currentUser.id, adoptSnapshot]);
 
   // Host: if the local player drifts from what was published (buffering,
   // slow device), publish the real position so viewers follow the host.
@@ -162,14 +273,15 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     if (!isSynced || !isHost) return;
     const timer = setInterval(() => {
       const video = videoRef.current;
-      if (!video || !playback || playback.movieId !== movie.id || bufferingRef.current || video.paused) return;
+      if (!video || !playback || playback.movieId !== movie.id || bufferingRef.current) return;
+      if (!wantsPlayingRef.current || video.paused || video.seeking) return;
       const expected = expectedPosition(playback, Date.now() + clockOffsetMs, video.duration);
       if (Math.abs(video.currentTime - expected) * 1000 > HOST_REPUBLISH_MS) {
-        onHostChangeRef.current?.({ isPlaying: true, position: video.currentTime });
+        publishState(true, video.currentTime);
       }
     }, HOST_CHECK_MS);
     return () => clearInterval(timer);
-  }, [isSynced, isHost, playback, movie.id, clockOffsetMs]);
+  }, [isSynced, isHost, playback, movie.id, clockOffsetMs, publishState]);
 
   // Refresh the drift readout once per second
   useEffect(() => {
@@ -185,11 +297,6 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
 
   // --- Playback Controls ---
 
-  const publish = (playing: boolean) => {
-    const video = videoRef.current;
-    if (video) onHostChangeRef.current?.({ isPlaying: playing, position: video.currentTime });
-  };
-
   /** Viewers who are blocked by autoplay rules join with one click */
   const joinPlayback = () => {
     setNeedsGesture(false);
@@ -197,7 +304,8 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   };
 
   const togglePlay = () => {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
 
     if (isSynced && !isHost) {
       if (needsGesture) joinPlayback();
@@ -205,18 +313,17 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
       return;
     }
 
-    if (videoRef.current.paused) {
-      // A failed source is reported by the video's error event (handled
-      // below), so a rejected play() needs no extra handling here.
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-        if (isSynced) publish(true);
-      }).catch(() => {});
+    // Decide from the intent (what the button shows), not video.paused:
+    // a video that is buffering after a seek is "playing" but frozen.
+    const next = !wantsPlayingRef.current;
+    setIntent(next);
+    if (next) {
+      if (video.ended) video.currentTime = 0;
+      playLocal();
     } else {
-      videoRef.current.pause();
-      setIsPlaying(false);
-      if (isSynced) publish(false);
+      pauseLocal();
     }
+    publishState(next);
   };
 
   const handleTimeUpdate = () => {
@@ -225,21 +332,63 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     }
   };
 
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+  /** Seek the local video; keeps playing if it was playing, paused if paused */
+  const commitSeek = (time: number, { debouncePublish = false } = {}) => {
+    const video = videoRef.current;
+    scrubbingRef.current = false;
+    pendingSeekRef.current = null;
+    setScrubTime(null);
+    if (!video || !Number.isFinite(time)) return;
+
+    video.currentTime = time;
+    setCurrentTime(time);
+    ensureIntent();
+
+    if (!syncedHostRef.current) return;
+    clearTimeout(seekPublishTimerRef.current);
+    if (debouncePublish) {
+      // Keyboard arrows can repeat quickly: send only the final position
+      seekPublishTimerRef.current = setTimeout(() => publishState(wantsPlayingRef.current, time), 250);
+    } else {
+      publishState(wantsPlayingRef.current, time);
+    }
+  };
+
+  const seekLocked = () => {
     if (isSynced && !isHost) {
       showHint('Only the host controls playback');
+      return true;
+    }
+    return false;
+  };
+
+  const handleScrubStart = () => {
+    if (seekLocked()) return;
+    scrubbingRef.current = true;
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (seekLocked()) return;
+    const newTime = parseFloat(e.target.value);
+    if (scrubbingRef.current) {
+      // Dragging: move the bar only; the video seeks on release
+      pendingSeekRef.current = newTime;
+      setScrubTime(newTime);
+    } else {
+      commitSeek(newTime, { debouncePublish: true });
+    }
+  };
+
+  const handleScrubEnd = () => {
+    if (!scrubbingRef.current) return;
+    const target = pendingSeekRef.current;
+    if (target === null) {
+      // Pressed and released without moving
+      scrubbingRef.current = false;
+      setScrubTime(null);
       return;
     }
-    const newTime = parseFloat(e.target.value);
-    if (videoRef.current) {
-      videoRef.current.currentTime = newTime;
-      setCurrentTime(newTime);
-    }
-    if (isSynced) {
-      // Dragging fires many events: publish once the scrubber settles
-      clearTimeout(seekPublishTimerRef.current);
-      seekPublishTimerRef.current = setTimeout(() => publish(!videoRef.current?.paused), 250);
-    }
+    commitSeek(target);
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -273,35 +422,77 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   };
 
   const handleRestart = () => {
-    if (isSynced && !isHost) {
-      showHint('Only the host controls playback');
-      return;
-    }
-    if (videoRef.current) {
-      videoRef.current.currentTime = 0;
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-        if (isSynced) publish(true);
-      }).catch(() => {});
-    }
+    if (seekLocked()) return;
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = 0;
+    setIntent(true);
+    playLocal();
+    publishState(true, 0);
   };
 
   // --- Video element events ---
 
   const handleWaiting = () => {
     bufferingRef.current = true;
+    setIsBuffering(true);
+  };
+
+  const handlePlay = () => {
+    if (ourPlayRef.current) {
+      ourPlayRef.current = false;
+      return;
+    }
+    // Started from outside the app (media keys, picture-in-picture)
+    if (controlsAreLocalRef.current && !wantsPlayingRef.current) {
+      setIntent(true);
+      publishState(true);
+    }
   };
 
   const handlePlaying = () => {
     setIsPlaying(true);
+    setIsBuffering(false);
     const wasBuffering = bufferingRef.current;
     bufferingRef.current = false;
-    // Host recovered from buffering: viewers kept going, so re-align them
-    if (isSynced && isHost && wasBuffering) publish(true);
+    // Host recovered from buffering (e.g. after a seek): viewers kept
+    // going meanwhile, so re-align them to where the host really is.
+    if (wasBuffering && wantsPlayingRef.current) publishState(true);
+  };
+
+  const handlePause = () => {
+    setIsPlaying(false);
+    setIsBuffering(false);
+    bufferingRef.current = false;
+    if (ourPauseRef.current) {
+      ourPauseRef.current = false;
+      return;
+    }
+    const video = videoRef.current;
+    if (!controlsAreLocalRef.current || !video || !wantsPlayingRef.current) return;
+    // Expected pauses (end of film, reload, seek, error) are handled
+    // elsewhere; ensureIntent() resumes after reloads and seeks.
+    if (video.ended || video.seeking || reloadingRef.current || hasErrorRef.current) return;
+    // Paused from outside the app (media keys, picture-in-picture, system
+    // media controls): follow it and tell the guests.
+    setIntent(false);
+    publishState(false);
   };
 
   const handleCanPlay = () => {
+    // The video can continue: make sure it does what the user asked for
+    ensureIntent();
+  };
+
+  const handleSeeked = () => {
+    ensureIntent();
+  };
+
+  const handleEmptied = () => {
+    // A new source is loading (movie change or backup source)
+    reloadingRef.current = true;
     bufferingRef.current = false;
+    setIsBuffering(false);
   };
 
   /** A source failed (e.g. 403/404, network, unsupported): try the next one */
@@ -335,18 +526,36 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   };
 
   const handleLoadedMetadata = () => {
-    setDuration(videoRef.current?.duration || 0);
-    // Switched to a backup mid-film: continue from the same place
+    const video = videoRef.current;
+    setDuration(video?.duration || 0);
+    reloadingRef.current = false;
+    if (!video) return;
+
     const resumeAt = resumeAtRef.current;
     resumeAtRef.current = null;
-    if (resumeAt !== null && !isSynced && videoRef.current) videoRef.current.currentTime = resumeAt;
-    // Late join / movie change: jump straight onto the shared timeline
-    if (isSynced && (!isHost || (playback && playback.updatedBy !== currentUser.id))) reconcile(true);
+
+    if (isSynced && !isHost) {
+      // Late join / movie change / backup source: jump onto the shared timeline
+      reconcile(true);
+    } else if (resumeAt !== null) {
+      // Switched to a backup mid-film: continue from the same place,
+      // playing or paused as before
+      video.currentTime = resumeAt;
+      ensureIntent();
+    } else if (isSynced && playback) {
+      // Host's player (re)loaded (movie change, refresh, coming back to
+      // the room): pick up the shared state instead of starting at 0:00
+      adoptSnapshot(playback);
+    } else {
+      ensureIntent();
+    }
   };
 
   const handleEnded = () => {
     setIsPlaying(false);
-    if (isSynced && isHost) publish(false);
+    if (!controlsAreLocal) return;
+    setIntent(false);
+    publishState(false);
   };
 
   // --- Drift Display ---
@@ -360,7 +569,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     if (!isSynced) {
       onSimulateDrift();
     } else if (isHost) {
-      publish(!videoRef.current?.paused);
+      publishState(wantsPlayingRef.current);
       showHint('Position re-sent to everyone');
     } else {
       reconcile(true);
@@ -369,6 +578,8 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   };
 
   const controlsLocked = isSynced && !isHost;
+  // Host / demo buttons show what was asked for; guests show what plays
+  const showAsPlaying = controlsAreLocal ? wantsPlaying : isPlaying;
 
   return (
     <div
@@ -384,10 +595,13 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
         poster={movie.backdropUrl}
         preload="metadata"
         onTimeUpdate={handleTimeUpdate}
+        onPlay={handlePlay}
         onPlaying={handlePlaying}
-        onPause={() => setIsPlaying(false)}
+        onPause={handlePause}
         onWaiting={handleWaiting}
         onCanPlay={handleCanPlay}
+        onSeeked={handleSeeked}
+        onEmptied={handleEmptied}
         onLoadedMetadata={handleLoadedMetadata}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
         onEnded={handleEnded}
@@ -478,8 +692,19 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
         </button>
       )}
 
+      {/* Loading after a seek or a slow connection (not the same as paused) */}
+      {isBuffering && showAsPlaying && !hasError && (
+        <div
+          className="pointer-events-none absolute inset-0 z-10 m-auto flex h-14 w-14 items-center justify-center rounded-full bg-black/60 backdrop-blur-md"
+          role="status"
+          aria-label="Loading video"
+        >
+          <Loader2 className="h-7 w-7 animate-spin text-white" />
+        </div>
+      )}
+
       {/* Center Big Play Button (when paused) */}
-      {!isPlaying && !hasError && !needsGesture && !controlsLocked && (
+      {!showAsPlaying && !hasError && !needsGesture && !controlsLocked && (
         <button
           type="button"
           onClick={togglePlay}
@@ -500,7 +725,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
       {/* Bottom Sleek Cinema Controls Bar */}
       <div
         className={`absolute bottom-0 inset-x-0 z-20 flex flex-col gap-2 p-3 sm:p-5 bg-gradient-to-t from-black/95 via-black/70 to-transparent transition-opacity duration-300 ${
-          showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+          showControls || !showAsPlaying ? 'opacity-100' : 'opacity-0'
         }`}
       >
         {/* Scrubber Progress Track */}
@@ -510,8 +735,13 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
             min={0}
             max={duration || 100}
             step="any"
-            value={currentTime}
+            value={scrubTime ?? currentTime}
+            onPointerDown={handleScrubStart}
             onChange={handleSeek}
+            onPointerUp={handleScrubEnd}
+            onPointerCancel={handleScrubEnd}
+            onLostPointerCapture={handleScrubEnd}
+            onBlur={handleScrubEnd}
             disabled={controlsLocked}
             aria-label="Seek"
             className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-white/20 accent-violet-400 transition-all group-hover/scrubber:h-2 disabled:cursor-not-allowed"
@@ -525,11 +755,11 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
               type="button"
               onClick={togglePlay}
               className="rounded-lg p-1.5 text-white hover:bg-white/10 transition-colors disabled:opacity-40"
-              aria-label={isPlaying ? 'Pause' : 'Play'}
+              aria-label={showAsPlaying ? 'Pause' : 'Play'}
               disabled={controlsLocked && !needsGesture}
               title={controlsLocked ? 'Only the host controls playback' : undefined}
             >
-              {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-white" />}
+              {showAsPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-white" />}
             </button>
 
             <button
