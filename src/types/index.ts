@@ -18,6 +18,10 @@ export interface Movie {
   backdropUrl: string;
   posterUrl: string;
   videoUrl: string;
+  /** Alternative copies of the same video, tried in order if videoUrl fails */
+  fallbackVideoUrls?: string[];
+  /** Attribution required by the video's licence */
+  videoCredit?: string;
   genre: string;
   category: string; // e.g., 'Sci-Fi', 'Animation', 'Documentary', 'Cyberpunk', 'Classics'
   year: number;

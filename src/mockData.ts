@@ -5,6 +5,49 @@ export const IS_MOCK_DATA = true;
 
 export const CATEGORIES = ['All', 'Sci-Fi', 'Cyberpunk', 'Animation', 'Space', 'Documentary'] as const;
 
+// Freely licensed open movies used as the catalog's video streams.
+// Each has a primary H.264 MP4 (plays in every browser) on the Internet
+// Archive, and a WebM backup on Wikimedia Commons that the player
+// switches to automatically if the primary fails.
+// Check they are still reachable with: npm run check:videos
+interface OpenMovieVideo {
+  url: string;
+  fallbacks: string[];
+  credit: string;
+}
+
+const WIKIMEDIA = 'https://upload.wikimedia.org/wikipedia/commons/transcoded';
+
+export const OPEN_MOVIE_VIDEOS = {
+  tearsOfSteel: {
+    url: 'https://archive.org/download/Tears-of-Steel/tears_of_steel_720p.mp4',
+    fallbacks: [
+      `${WIKIMEDIA}/1/10/Tears_of_Steel_in_4k_-_Official_Blender_Foundation_release.webm/Tears_of_Steel_in_4k_-_Official_Blender_Foundation_release.webm.480p.vp9.webm`,
+    ],
+    credit: 'Tears of Steel © Blender Foundation (mango.blender.org), CC BY 3.0',
+  },
+  bigBuckBunny: {
+    url: 'https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4',
+    fallbacks: [`${WIKIMEDIA}/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.480p.vp9.webm`],
+    credit: 'Big Buck Bunny © Blender Foundation (peach.blender.org), CC BY 3.0',
+  },
+  elephantsDream: {
+    url: 'https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4',
+    fallbacks: [`${WIKIMEDIA}/a/a2/Elephants_Dream_%282006%29.webm/Elephants_Dream_%282006%29.webm.480p.vp9.webm`],
+    credit: 'Elephants Dream © Orange Open Movie Project / Blender Foundation, CC BY 2.5',
+  },
+  sintel: {
+    url: 'https://archive.org/download/Sintel/sintel-2048-surround_512kb.mp4',
+    fallbacks: [`${WIKIMEDIA}/f/f1/Sintel_movie_4K.webm/Sintel_movie_4K.webm.480p.vp9.webm`],
+    credit: 'Sintel © Blender Foundation (durian.blender.org), CC BY 3.0',
+  },
+} satisfies Record<string, OpenMovieVideo>;
+
+/** Video fields for a catalog movie */
+function movieVideo(video: OpenMovieVideo) {
+  return { videoUrl: video.url, fallbackVideoUrls: video.fallbacks, videoCredit: video.credit };
+}
+
 export const mockMovies: Movie[] = [
   {
     id: 'movie-1',
@@ -12,7 +55,7 @@ export const mockMovies: Movie[] = [
     description: 'Set in a dystopian future Amsterdam, a squad of freedom fighters and scientists attempt to save the world using a robotic nexus portal and ancient memories.',
     backdropUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.tearsOfSteel),
     genre: 'Sci-Fi / Cyberpunk',
     category: 'Cyberpunk',
     year: 2024,
@@ -27,7 +70,7 @@ export const mockMovies: Movie[] = [
     description: 'A breathtaking deep-space journey traversing stellar nurseries, neutron star collisions, and the outer rim of the Milky Way.',
     backdropUrl: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.bigBuckBunny),
     genre: 'Space / Science',
     category: 'Space',
     year: 2025,
@@ -42,7 +85,7 @@ export const mockMovies: Movie[] = [
     description: 'Under the iridescent glow of skyscraper holos, underground speed-racers challenge AI syndicate enforcers across hyper-highways.',
     backdropUrl: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.elephantsDream),
     genre: 'Cyberpunk / Action',
     category: 'Cyberpunk',
     year: 2023,
@@ -56,7 +99,7 @@ export const mockMovies: Movie[] = [
     description: 'A lone wanderer bonds with a wounded baby dragon and embarks on a perilous mountain expedition to rescue it from sky hunters.',
     backdropUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.sintel),
     genre: 'Fantasy / Animation',
     category: 'Animation',
     year: 2024,
@@ -70,7 +113,7 @@ export const mockMovies: Movie[] = [
     description: 'An elite research team trapped inside a decaying orbital research station discovers that localized time dilations are warping reality.',
     backdropUrl: 'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1447433589675-4aaa569f3e05?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.tearsOfSteel),
     genre: 'Sci-Fi / Thriller',
     category: 'Sci-Fi',
     year: 2025,
@@ -84,7 +127,7 @@ export const mockMovies: Movie[] = [
     description: 'A contemplative documentary exploring robotic ecosystems and organic bio-luminescent flora engineered in deep biosphere domes.',
     backdropUrl: 'https://images.unsplash.com/photo-1511447333015-45b65e60f6d5?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.bigBuckBunny),
     genre: 'Nature / Documentary',
     category: 'Documentary',
     year: 2023,
@@ -98,7 +141,7 @@ export const mockMovies: Movie[] = [
     description: 'After fifty years of deep-space silence, a lunar radio telescope array picks up a rhythmic analog audio frequency from Alpha Centauri.',
     backdropUrl: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1502134249126-9f3755a50d78?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.elephantsDream),
     genre: 'Mystery / Space',
     category: 'Space',
     year: 2026,
@@ -112,7 +155,7 @@ export const mockMovies: Movie[] = [
     description: 'When an art curator discovers masterworks created by an unregistered android, debate erupts across the cultural academy.',
     backdropUrl: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1600&auto=format&fit=crop&q=80',
     posterUrl: 'https://images.unsplash.com/photo-1531297484001-80022131f5a1?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    ...movieVideo(OPEN_MOVIE_VIDEOS.tearsOfSteel),
     genre: 'Drama / Sci-Fi',
     category: 'Sci-Fi',
     year: 2024,
@@ -178,7 +221,7 @@ export const mockPlaylist: PlaylistItem[] = [
     title: 'Tears of Steel',
     duration: '12:14',
     thumbnailUrl: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    videoUrl: OPEN_MOVIE_VIDEOS.tearsOfSteel.url,
     addedBy: 'Alex Rivera (Host)',
     year: '2024',
     genre: 'Cyberpunk',
@@ -189,7 +232,7 @@ export const mockPlaylist: PlaylistItem[] = [
     title: 'Cosmos: Nebula Odyssey',
     duration: '10:02',
     thumbnailUrl: 'https://images.unsplash.com/photo-1506703719100-a0f3a48c0f86?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    videoUrl: OPEN_MOVIE_VIDEOS.bigBuckBunny.url,
     addedBy: 'Jordan Lee',
     year: '2025',
     genre: 'Space',
@@ -200,7 +243,7 @@ export const mockPlaylist: PlaylistItem[] = [
     title: 'Sintel: Dragon Quest',
     duration: '15:20',
     thumbnailUrl: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80',
-    videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+    videoUrl: OPEN_MOVIE_VIDEOS.sintel.url,
     addedBy: 'Maya Patel',
     year: '2024',
     genre: 'Animation',

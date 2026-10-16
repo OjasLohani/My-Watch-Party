@@ -121,6 +121,11 @@ export function WatchRoomScreen({
             <p className="text-xs text-slate-400 truncate max-w-md">
               Screening: <span className="text-slate-200 font-semibold">{currentMovie.title}</span> ({currentMovie.year})
             </p>
+            {currentMovie.videoCredit && (
+              <p className="text-[10px] text-slate-500 truncate max-w-md" title={currentMovie.videoCredit}>
+                Video: {currentMovie.videoCredit}
+              </p>
+            )}
           </div>
         </div>
 

@@ -61,8 +61,18 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   const [volume, setVolume] = useState(0.85);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [hasError, setHasError] = useState(false);
   const [showControls, setShowControls] = useState(true);
+
+  // --- Video sources: primary first, then backups if it fails ---
+  // Both values below are tied to a movie id, so switching movies
+  // starts fresh from the primary source without needing an effect.
+  const sources = [movie.videoUrl, ...(movie.fallbackVideoUrls ?? [])];
+  const [sourceState, setSourceState] = useState({ movieId: movie.id, index: 0 });
+  const sourceIndex = sourceState.movieId === movie.id ? Math.min(sourceState.index, sources.length - 1) : 0;
+  const [failure, setFailure] = useState<{ movieId: string; reason: string } | null>(null);
+  const hasError = failure?.movieId === movie.id;
+  /** Position to resume at after switching to a backup source */
+  const resumeAtRef = useRef<number | null>(null);
 
   // --- Synchronized playback state (real rooms only) ---
   const isSynced = Boolean(sync);
@@ -196,10 +206,12 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     }
 
     if (videoRef.current.paused) {
+      // A failed source is reported by the video's error event (handled
+      // below), so a rejected play() needs no extra handling here.
       videoRef.current.play().then(() => {
         setIsPlaying(true);
         if (isSynced) publish(true);
-      }).catch(() => setHasError(true));
+      }).catch(() => {});
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
@@ -292,8 +304,42 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     bufferingRef.current = false;
   };
 
+  /** A source failed (e.g. 403/404, network, unsupported): try the next one */
+  const handleVideoError = () => {
+    const video = videoRef.current;
+    const code = video?.error?.code;
+    if (code === MediaError.MEDIA_ERR_ABORTED) return; // load was cancelled on purpose
+
+    if (video && video.currentTime > 0) resumeAtRef.current = video.currentTime;
+    if (sourceIndex + 1 < sources.length) {
+      console.warn(`Video source ${sourceIndex + 1}/${sources.length} failed for "${movie.title}", trying a backup.`);
+      setSourceState({ movieId: movie.id, index: sourceIndex + 1 });
+      return;
+    }
+
+    const reason =
+      code === MediaError.MEDIA_ERR_NETWORK ? 'a network error interrupted the download'
+      : code === MediaError.MEDIA_ERR_DECODE ? 'the file could not be decoded'
+      : 'the video server refused or could not find the file';
+    setFailure({ movieId: movie.id, reason });
+    setIsPlaying(false);
+  };
+
+  const retryFromFirstSource = () => {
+    setFailure(null);
+    if (sourceIndex === 0) {
+      videoRef.current?.load();
+    } else {
+      setSourceState({ movieId: movie.id, index: 0 }); // new src reloads automatically
+    }
+  };
+
   const handleLoadedMetadata = () => {
     setDuration(videoRef.current?.duration || 0);
+    // Switched to a backup mid-film: continue from the same place
+    const resumeAt = resumeAtRef.current;
+    resumeAtRef.current = null;
+    if (resumeAt !== null && !isSynced && videoRef.current) videoRef.current.currentTime = resumeAt;
     // Late join / movie change: jump straight onto the shared timeline
     if (isSynced && (!isHost || (playback && playback.updatedBy !== currentUser.id))) reconcile(true);
   };
@@ -334,8 +380,9 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
       {/* Video Element */}
       <video
         ref={videoRef}
-        src={movie.videoUrl}
+        src={sources[sourceIndex]}
         poster={movie.backdropUrl}
+        preload="metadata"
         onTimeUpdate={handleTimeUpdate}
         onPlaying={handlePlaying}
         onPause={() => setIsPlaying(false)}
@@ -344,7 +391,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
         onLoadedMetadata={handleLoadedMetadata}
         onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
         onEnded={handleEnded}
-        onError={() => setHasError(true)}
+        onError={handleVideoError}
         playsInline
         className="h-full w-full object-contain bg-black cursor-pointer"
         onClick={togglePlay}
@@ -354,21 +401,19 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
       {hasError && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-6 text-center z-20 backdrop-blur-md">
           <AlertCircle className="h-10 w-10 text-amber-400" />
-          <h4 className="mt-2 text-sm font-bold text-white">Browser Stream Playback</h4>
+          <h4 className="mt-2 text-sm font-bold text-white">Video unavailable</h4>
           <p className="mt-1 max-w-sm text-xs text-slate-400">
-            Streaming open media stream. Click below to reconnect playback.
+            “{movie.title}” could not be loaded — {failure?.reason}
+            {sources.length > 1 ? ` (tried ${sources.length} sources)` : ''}.
+            Check your internet connection and try again
+            {isSynced ? '. Chat, reactions and polls keep working meanwhile.' : '.'}
           </p>
           <button
             type="button"
-            onClick={() => {
-              setHasError(false);
-              if (videoRef.current) {
-                videoRef.current.load();
-              }
-            }}
+            onClick={retryFromFirstSource}
             className="mt-4 rounded-xl border border-violet-500/30 bg-violet-600/20 px-4 py-2 text-xs font-semibold text-violet-300 hover:bg-violet-600/30"
           >
-            Retry Stream
+            Try Again
           </button>
         </div>
       )}

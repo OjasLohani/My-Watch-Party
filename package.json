@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "node --test \"tests/*.test.ts\" \"supabase/tests/*.test.mjs\"",
     "test:unit": "node --test \"tests/*.test.ts\"",
-    "test:db": "node --test \"supabase/tests/*.test.mjs\""
+    "test:db": "node --test \"supabase/tests/*.test.mjs\"",
+    "check:videos": "node scripts/check-video-sources.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",
