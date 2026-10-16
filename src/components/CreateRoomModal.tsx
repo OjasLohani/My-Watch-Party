@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import { X, Lock, Globe, Film, Loader2 } from 'lucide-react';
 import type { Movie } from '../types';
+import { DISPLAY_NAME_MAX, validateDisplayName } from '../lib/displayName';
 
 interface CreateRoomModalProps {
   isOpen: boolean;
   onClose: () => void;
   movies: Movie[];
   selectedMovieId?: string;
+  /** The user's saved display name (empty if they have not chosen one) */
+  defaultHostName?: string;
   /** Resolves to an error message, or null when the room was created */
   onCreateRoom: (data: { roomName: string; movieId: string; isPrivate: boolean; hostName: string }) => Promise<string | null>;
 }
@@ -16,12 +19,13 @@ export function CreateRoomModal({
   onClose,
   movies,
   selectedMovieId,
+  defaultHostName = '',
   onCreateRoom,
 }: CreateRoomModalProps) {
   const [roomName, setRoomName] = useState('Campus Film Club Screening');
   const [movieId, setMovieId] = useState(selectedMovieId || movies[0]?.id || '');
   const [isPrivate, setIsPrivate] = useState(false);
-  const [hostName, setHostName] = useState('Alex Rivera');
+  const [hostName, setHostName] = useState(defaultHostName);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -43,8 +47,9 @@ export function CreateRoomModal({
       setError('Please provide a name for your room.');
       return;
     }
-    if (!hostName.trim()) {
-      setError('Please enter your host display name.');
+    const nameCheck = validateDisplayName(hostName);
+    if (!nameCheck.ok) {
+      setError(nameCheck.error);
       return;
     }
 
@@ -55,7 +60,7 @@ export function CreateRoomModal({
       roomName: roomName.trim(),
       movieId,
       isPrivate,
-      hostName: hostName.trim(),
+      hostName: nameCheck.name,
     });
     setIsLoading(false);
 
@@ -128,9 +133,9 @@ export function CreateRoomModal({
             <input
               type="text"
               value={hostName}
-              maxLength={40}
+              maxLength={DISPLAY_NAME_MAX * 2 /* real limit checked on submit */}
               onChange={(e) => setHostName(e.target.value)}
-              placeholder="e.g. Alex Rivera"
+              placeholder="e.g. Sam"
               className="mt-1.5 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
               required
             />

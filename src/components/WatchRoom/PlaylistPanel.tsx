@@ -11,6 +11,8 @@ interface PlaylistPanelProps {
   onRemoveItem?: (item: PlaylistItem) => void;
   /** Host only: move a title up (-1) or down (1) */
   onMoveItem?: (item: PlaylistItem, direction: -1 | 1) => void;
+  /** Current display names by user id */
+  nameById?: Map<string, string>;
 }
 
 export function PlaylistPanel({
@@ -21,6 +23,7 @@ export function PlaylistPanel({
   onOpenDiscover,
   onRemoveItem,
   onMoveItem,
+  nameById,
 }: PlaylistPanelProps) {
   return (
     <div className="flex h-full flex-col bg-[#0A0C13] p-4">
@@ -111,7 +114,7 @@ export function PlaylistPanel({
                     {item.duration}
                   </span>
                   <span>•</span>
-                  <span className="truncate">Added by {item.addedBy}</span>
+                  <span className="truncate">Added by {(item.addedById && nameById?.get(item.addedById)) || item.addedBy}</span>
                 </div>
               </div>
 

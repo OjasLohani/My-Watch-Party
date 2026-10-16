@@ -10,6 +10,8 @@ const WatchRoomScreen = lazy(() =>
   import('./components/WatchRoom/WatchRoomScreen').then((m) => ({ default: m.WatchRoomScreen })));
 const CreateRoomModal = lazy(() =>
   import('./components/CreateRoomModal').then((m) => ({ default: m.CreateRoomModal })));
+const NameModal = lazy(() =>
+  import('./components/NameModal').then((m) => ({ default: m.NameModal })));
 const JoinRoomModal = lazy(() =>
   import('./components/JoinRoomModal').then((m) => ({ default: m.JoinRoomModal })));
 const StageOverview = lazy(() =>
@@ -25,7 +27,7 @@ function SectionLoader({ label }: { label: string }) {
   );
 }
 import { isSupabaseConfigured } from './lib/supabase';
-import { getOrCreateSessionUser, saveSessionUser } from './lib/session';
+import { getOrCreateSessionUser, getChosenName, hasChosenName, saveChosenName } from './lib/session';
 import { ensureSignedIn } from './lib/auth';
 import { isNewerSnapshot } from './lib/playbackService';
 import type { PlaybackSnapshot } from './lib/playbackState';
@@ -39,7 +41,8 @@ import {
   renewConnectionLease as apiRenewConnectionLease,
   renewConnectionLeaseOnExit as apiRenewConnectionLeaseOnExit,
   autoTransferHost as apiAutoTransferHost,
-  fetchRoom as apiFetchRoom
+  fetchRoom as apiFetchRoom,
+  updateMyDisplayName as apiUpdateMyDisplayName
 } from './services/roomService';
 import {
   closePoll as apiClosePoll,
@@ -125,6 +128,8 @@ export default function App() {
   // Modals & Floating Overlays
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
+  // Name dialog: before joining (remembers which room to join next) or to edit
+  const [namePrompt, setNamePrompt] = useState<{ mode: 'join'; roomCode: string } | { mode: 'edit' } | null>(null);
   const [selectedMovieForCreate, setSelectedMovieForCreate] = useState<string | undefined>();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
@@ -247,12 +252,19 @@ export default function App() {
 
   // Join Room by Code (Used by modal and invite URLs).
   // Returns an error message, or null on success.
-  const handleJoinRoom = useCallback(async (code: string): Promise<string | null> => {
+  // `chosenName` is passed right after the name dialog (state not updated yet)
+  const handleJoinRoom = useCallback(async (code: string, chosenName?: string): Promise<string | null> => {
     const cleanCode = code.trim().toUpperCase();
+
+    // First visit: ask for a display name, then join (see handleSaveName)
+    if (!chosenName && !hasChosenName()) {
+      setNamePrompt({ mode: 'join', roomCode: cleanCode });
+      return null;
+    }
 
     try {
       const userId = isSupabaseConfigured() ? await ensureSignedIn() : currentUser.id;
-      const joiningUser: User = { ...currentUser, id: userId };
+      const joiningUser: User = { ...currentUser, id: userId, name: chosenName ?? currentUser.name };
 
       // The server records membership and decides host status
       const { room, error } = await apiJoinRoom(cleanCode, joiningUser);
@@ -268,7 +280,12 @@ export default function App() {
 
       // Fetch active room members
       const roomMembers = await apiGetRoomMembers(room.id, updatedUser.id);
-      setMembers(roomMembers.length > 0 ? roomMembers : [updatedUser]);
+      // Demo rooms use sample members: add yourself so your name shows too
+      setMembers(
+        room.isMockData
+          ? [updatedUser, ...roomMembers.filter((m) => m.id !== updatedUser.id)]
+          : roomMembers.length > 0 ? roomMembers : [updatedUser]
+      );
 
       // Set active movie
       const matchedMovie = mockMovies.find((m) => m.id === room.currentMovieId) || mockMovies[0];
@@ -514,12 +531,13 @@ export default function App() {
     isPrivate: boolean;
     hostName: string;
   }): Promise<string | null> => {
+    const hostName = saveChosenName(data.hostName);
+    if (!hostName) return 'Please enter a valid display name.';
     let updatedUser: User = {
       ...currentUser,
-      name: data.hostName,
+      name: hostName,
       isHost: true,
     };
-    saveSessionUser(updatedUser);
 
     if (isSupabaseConfigured()) {
       try {
@@ -698,6 +716,30 @@ export default function App() {
     addToast('You are now the host.', 'success');
   };
 
+  // --- Display name ---
+
+  /** Saves the name from the name dialog. Returns an error message, or null. */
+  const handleSaveName = async (name: string): Promise<string | null> => {
+    const prompt = namePrompt;
+    // Renaming inside rooms: update the database first (own rows only)
+    if (prompt?.mode === 'edit' && isSupabaseConfigured()) {
+      const { error } = await apiUpdateMyDisplayName(name);
+      if (error) return error;
+    }
+    const saved = saveChosenName(name);
+    if (!saved) return 'Please enter a valid display name.';
+    setCurrentUser((prev) => ({ ...prev, name: saved }));
+    setMembers((prev) => prev.map((m) => (m.id === currentUser.id ? { ...m, name: saved } : m)));
+    setNamePrompt(null);
+
+    if (prompt?.mode === 'join') {
+      await handleJoinRoom(prompt.roomCode, saved);
+    } else {
+      addToast(`You are now "${saved}".`, 'success');
+    }
+    return null;
+  };
+
   // Transfer Host Role
   const handleTransferHost = async (targetUserId: string) => {
     const target = members.find((m) => m.id === targetUserId);
@@ -791,6 +833,7 @@ export default function App() {
         onOpenJoinModal={() => setIsJoinModalOpen(true)}
         onToggleHostRole={handleToggleHostRole}
         canToggleHostRole={canToggleHostRole}
+        onEditName={() => setNamePrompt({ mode: 'edit' })}
       />
 
       {/* Backend Status Notice */}
@@ -899,6 +942,7 @@ export default function App() {
             onClose={() => setIsCreateModalOpen(false)}
             movies={mockMovies}
             selectedMovieId={selectedMovieForCreate}
+            defaultHostName={getChosenName()}
             onCreateRoom={handleCreateRoom}
           />
         )}
@@ -908,6 +952,14 @@ export default function App() {
             isOpen={isJoinModalOpen}
             onClose={() => setIsJoinModalOpen(false)}
             onJoinRoom={handleJoinRoom}
+          />
+        )}
+        {namePrompt && (
+          <NameModal
+            mode={namePrompt.mode}
+            initialName={getChosenName()}
+            onClose={() => setNamePrompt(null)}
+            onSave={handleSaveName}
           />
         )}
       </Suspense>

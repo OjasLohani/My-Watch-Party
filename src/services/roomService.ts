@@ -279,6 +279,24 @@ export async function fetchRoom(roomId: string): Promise<Room | null> {
   }
 }
 
+/**
+ * Renames the signed-in user in every room they belong to. Row Level
+ * Security only allows a user to update their OWN membership rows (and
+ * only name / avatar / colour), so this can never change someone else's
+ * name. The database also enforces 1–40 characters.
+ */
+export async function updateMyDisplayName(name: string): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured()) return {};
+  try {
+    const userId = await ensureSignedIn();
+    const { error } = await (await getSupabase()).from('room_members').update({ name }).eq('user_id', userId);
+    if (error) return { error: friendlyError(error) };
+    return {};
+  } catch (err: unknown) {
+    return { error: friendlyError(err) };
+  }
+}
+
 /** "Still here" signal; the server records the time (Stage 3 migration) */
 export async function touchRoom(code: string): Promise<{ error?: string }> {
   if (!isSupabaseConfigured()) return {};

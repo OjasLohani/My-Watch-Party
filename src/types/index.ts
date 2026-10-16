@@ -39,6 +39,8 @@ export interface PlaylistItem {
   thumbnailUrl: string;
   videoUrl: string;
   addedBy: string;
+  /** User id of who added it, to show their current name */
+  addedById?: string;
   year?: string | number;
   genre?: string;
 }

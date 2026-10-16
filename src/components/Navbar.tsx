@@ -1,4 +1,4 @@
-import { Film, Plus, LogIn, Compass, Tv, Shield } from 'lucide-react';
+import { Film, Plus, LogIn, Compass, Tv, Shield, Pencil } from 'lucide-react';
 import type { User, ViewMode, Room } from '../types';
 
 interface NavbarProps {
@@ -9,6 +9,8 @@ interface NavbarProps {
   onOpenCreateModal: () => void;
   onOpenJoinModal: () => void;
   onToggleHostRole: () => void;
+  /** Opens the "change your name" dialog */
+  onEditName?: () => void;
   /** False in real rooms, where the database decides who is host */
   canToggleHostRole?: boolean;
 }
@@ -22,6 +24,7 @@ export function Navbar({
   onOpenJoinModal,
   onToggleHostRole,
   canToggleHostRole = true,
+  onEditName,
 }: NavbarProps) {
   return (
     <nav className="sticky top-0 z-40 w-full border-b border-white/[0.08] bg-[#06070B]/85 backdrop-blur-xl">
@@ -130,6 +133,17 @@ export function Navbar({
               </div>
             </button>
           </div>
+          {onEditName && (
+            <button
+              type="button"
+              onClick={onEditName}
+              className="rounded-lg p-1.5 text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+              title="Change your name"
+              aria-label="Change your name"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
 

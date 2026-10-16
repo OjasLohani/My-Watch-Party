@@ -161,6 +161,7 @@ interface DbPlaylistItem {
   id: number;
   movie_id: string;
   position: number;
+  added_by: string;
   added_by_name: string;
 }
 
@@ -168,7 +169,7 @@ export function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<Playlis
   return readOr('fetchPlaylist', [] as PlaylistItem[], async () => {
   const { data, error } = await (await getSupabase())
     .from('room_playlist_items')
-    .select('id, movie_id, position, added_by_name')
+    .select('id, movie_id, position, added_by, added_by_name')
     .eq('room_id', roomId)
     .order('position', { ascending: true });
   if (error) {
@@ -186,6 +187,7 @@ export function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<Playlis
       thumbnailUrl: movie.posterUrl,
       videoUrl: movie.videoUrl,
       addedBy: row.added_by_name,
+      addedById: row.added_by,
       year: movie.year,
       genre: movie.category,
     }];

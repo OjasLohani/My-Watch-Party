@@ -77,7 +77,8 @@ export function ParticipantsList({
               {/* Name & Role */}
               <div className="text-left">
                 <div className="text-xs font-bold text-white flex items-center gap-1">
-                  {member.name} {isCurrentUser && <span className="text-slate-400 font-normal text-[10px]">(You)</span>}
+                  <span className="truncate max-w-[140px]" title={member.name}>{member.name}</span>{' '}
+                  {isCurrentUser && <span className="text-slate-400 font-normal text-[10px]">(You)</span>}
                 </div>
                 <div className="text-[10px] text-slate-400 flex items-center gap-1">
                   <span>{member.isHost ? 'Host' : 'Spectator'}</span>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { 
   ArrowLeft, 
   Copy, 
@@ -77,6 +77,9 @@ export function WatchRoomScreen({
 }: WatchRoomScreenProps) {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Everyone's current name, so chat and the queue show renamed people correctly
+  const nameById = useMemo(() => new Map(members.map((m) => [m.id, m.name])), [members]);
 
   const tabs: { id: TabType; label: string; icon: typeof MessageSquare }[] = [
     { id: 'chat', label: 'Live Chat', icon: MessageSquare },
@@ -258,6 +261,7 @@ export function WatchRoomScreen({
                 currentUser={currentUser}
                 onSendMessage={onSendMessage}
                 onTriggerReaction={onTriggerReaction}
+                nameById={nameById}
               />
             )}
 
@@ -270,6 +274,7 @@ export function WatchRoomScreen({
                 onOpenDiscover={onOpenDiscover}
                 onRemoveItem={onRemoveFromPlaylist}
                 onMoveItem={onMovePlaylistItem}
+                nameById={nameById}
               />
             )}
 

@@ -29,6 +29,7 @@
 | Browser hardening | No CSP / security headers | ✅ Added in `vercel.json`, verified against a production build |
 | Error messages | Database messages are user-readable and leak no internals | ✅ OK |
 | Chat / names | Rendered as text by React (no HTML injection); sender name comes from membership, not the client | ✅ OK |
+| Display names | Only your own membership rows can be renamed (RLS + column rights); 1–40 characters enforced by the database; invisible / text-direction characters stripped in the app | ✅ OK (tested in supabase/tests/names.test.mjs and tests/browser/names.browser.mjs) |
 | Presence | The "online" list is reported by each client: a room member could make another member look online | ⚠️ Accepted: display only; takeover uses the server heartbeat, not presence |
 | Reaction sender | The sender id in a reaction is not verified | ⚠️ Accepted: not displayed or used |
 | Room-code guessing | `join_room` has no attempt limit (codes have ~887 million combinations per prefix) | ⚠️ Recommendation: add a per-user join rate limit if the site becomes public |

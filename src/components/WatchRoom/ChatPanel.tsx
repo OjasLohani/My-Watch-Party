@@ -8,6 +8,8 @@ interface ChatPanelProps {
   currentUser: User;
   onSendMessage: (text: string) => void;
   onTriggerReaction: (emoji: string) => void;
+  /** Current display names by user id (messages keep the name used when sent as a fallback) */
+  nameById?: Map<string, string>;
 }
 
 export function ChatPanel({
@@ -15,6 +17,7 @@ export function ChatPanel({
   currentUser,
   onSendMessage,
   onTriggerReaction,
+  nameById,
 }: ChatPanelProps) {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -57,6 +60,7 @@ export function ChatPanel({
           }
 
           const isMe = msg.userId === currentUser.id;
+          const senderName = (isMe ? currentUser.name : nameById?.get(msg.userId)) ?? msg.userName;
 
           return (
             <div
@@ -66,7 +70,7 @@ export function ChatPanel({
               {msg.userAvatar ? (
                 <img
                   src={msg.userAvatar}
-                  alt={msg.userName}
+                  alt={senderName}
                   className="h-7 w-7 rounded-full object-cover shrink-0 border border-white/20"
                   onError={(e) => {
                     e.currentTarget.src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=120&auto=format&fit=crop&q=80';
@@ -77,7 +81,7 @@ export function ChatPanel({
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
                   style={{ backgroundColor: msg.userColor }}
                 >
-                  {msg.userName.charAt(0)}
+                  {[...senderName][0] ?? '?'}
                 </div>
               )}
 
@@ -89,7 +93,7 @@ export function ChatPanel({
                 }`}
               >
                 <div className={`flex items-center gap-1.5 font-bold text-[10px] mb-0.5 ${isMe ? 'text-violet-200' : 'text-slate-400'}`}>
-                  <span>{msg.userName}</span>
+                  <span className="truncate max-w-[180px]">{senderName}</span>
                   {isMe && currentUser.isHost && (
                     <Shield className="h-2.5 w-2.5 text-amber-300" />
                   )}
