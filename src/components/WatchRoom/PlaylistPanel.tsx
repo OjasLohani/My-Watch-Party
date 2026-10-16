@@ -1,4 +1,4 @@
-import { Play, Plus, Clock, Film } from 'lucide-react';
+import { Play, Plus, Clock, Film, ChevronUp, ChevronDown, X } from 'lucide-react';
 import type { PlaylistItem } from '../../types';
 
 interface PlaylistPanelProps {
@@ -7,6 +7,10 @@ interface PlaylistPanelProps {
   isHost: boolean;
   onSelectMovie: (item: PlaylistItem) => void;
   onOpenDiscover: () => void;
+  /** Host only: remove a title from the shared queue */
+  onRemoveItem?: (item: PlaylistItem) => void;
+  /** Host only: move a title up (-1) or down (1) */
+  onMoveItem?: (item: PlaylistItem, direction: -1 | 1) => void;
 }
 
 export function PlaylistPanel({
@@ -15,6 +19,8 @@ export function PlaylistPanel({
   isHost,
   onSelectMovie,
   onOpenDiscover,
+  onRemoveItem,
+  onMoveItem,
 }: PlaylistPanelProps) {
   return (
     <div className="flex h-full flex-col bg-[#0A0C13] p-4">
@@ -39,6 +45,14 @@ export function PlaylistPanel({
           Queue Film
         </button>
       </div>
+
+      {playlist.length === 0 && (
+        <p className="mt-6 text-center text-[11px] text-slate-400">
+          {isHost
+            ? 'The queue is empty. Use “Queue Film” or the + on any movie card.'
+            : 'The queue is empty. The host can add films.'}
+        </p>
+      )}
 
       {/* Playlist Items */}
       <div className="mt-3 flex-1 overflow-y-auto space-y-2 pr-1 max-h-[460px]">
@@ -101,6 +115,36 @@ export function PlaylistPanel({
                 </div>
               </div>
 
+              {/* Host Controls: reorder / remove */}
+              {isHost && (onMoveItem || onRemoveItem) && (
+                <div className="flex flex-col">
+                  {onMoveItem && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onMoveItem(item, -1)}
+                        disabled={index === 0}
+                        className="rounded p-0.5 text-slate-400 hover:text-white hover:bg-white/[0.08] transition-colors disabled:opacity-30"
+                        title="Move up"
+                        aria-label={`Move ${item.title} up`}
+                      >
+                        <ChevronUp className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onMoveItem(item, 1)}
+                        disabled={index === playlist.length - 1}
+                        className="rounded p-0.5 text-slate-400 hover:text-white hover:bg-white/[0.08] transition-colors disabled:opacity-30"
+                        title="Move down"
+                        aria-label={`Move ${item.title} down`}
+                      >
+                        <ChevronDown className="h-3 w-3" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+
               {/* Host Control: Play Now Button */}
               {isHost && !isCurrent && (
                 <button
@@ -111,6 +155,18 @@ export function PlaylistPanel({
                   aria-label={`Play ${item.title}`}
                 >
                   <Play className="h-3 w-3 fill-white" />
+                </button>
+              )}
+
+              {isHost && onRemoveItem && (
+                <button
+                  type="button"
+                  onClick={() => onRemoveItem(item)}
+                  className="rounded-lg p-1.5 text-slate-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                  title="Remove from queue"
+                  aria-label={`Remove ${item.title} from queue`}
+                >
+                  <X className="h-3 w-3" />
                 </button>
               )}
             </div>

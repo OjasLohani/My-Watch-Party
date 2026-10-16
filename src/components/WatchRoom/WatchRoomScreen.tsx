@@ -8,7 +8,8 @@ import {
   Vote 
 } from 'lucide-react';
 import type { Room, User, Movie, PlaylistItem, ChatMessage, Poll, FloatingReaction } from '../../types';
-import { VideoPlayer } from './VideoPlayer';
+import type { RealtimeStatus } from '../../hooks/useRoomRealtime';
+import { VideoPlayer, type PlaybackSyncProps } from './VideoPlayer';
 import { ChatPanel } from './ChatPanel';
 import { PlaylistPanel } from './PlaylistPanel';
 import { PollPanel } from './PollPanel';
@@ -22,17 +23,24 @@ interface WatchRoomScreenProps {
   members: User[];
   playlist: PlaylistItem[];
   chatMessages: ChatMessage[];
-  initialPoll: Poll;
+  poll: Poll | null;
   driftMs: number;
   onLeaveRoom: () => void;
   onSelectMovieFromPlaylist: (item: PlaylistItem) => void;
+  onRemoveFromPlaylist: (item: PlaylistItem) => void;
+  onMovePlaylistItem: (item: PlaylistItem, direction: -1 | 1) => void;
   onSendMessage: (text: string) => void;
   onTriggerReaction: (emoji: string) => void;
-  onVoteCast: (optionId: string) => void;
+  onVoteCast: (optionId: string) => Promise<string | null>;
+  onCreatePoll: (question: string, options: string[]) => Promise<string | null>;
+  onClosePoll: () => Promise<string | null>;
   onTransferHost: (targetUserId: string) => void;
   onSimulateDrift: () => void;
   onOpenDiscover: () => void;
   floatingReactions: FloatingReaction[];
+  /** Shared playback wiring (real rooms only) */
+  playbackSync?: PlaybackSyncProps;
+  connectionStatus: RealtimeStatus;
 }
 
 type TabType = 'chat' | 'playlist' | 'poll';
@@ -44,17 +52,23 @@ export function WatchRoomScreen({
   members,
   playlist,
   chatMessages,
-  initialPoll,
+  poll,
   driftMs,
   onLeaveRoom,
   onSelectMovieFromPlaylist,
+  onRemoveFromPlaylist,
+  onMovePlaylistItem,
   onSendMessage,
   onTriggerReaction,
   onVoteCast,
+  onCreatePoll,
+  onClosePoll,
   onTransferHost,
   onSimulateDrift,
   onOpenDiscover,
   floatingReactions,
+  playbackSync,
+  connectionStatus,
 }: WatchRoomScreenProps) {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [copiedLink, setCopiedLink] = useState(false);
@@ -96,6 +110,11 @@ export function WatchRoomScreen({
               {room.isMockData && (
                 <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
                   Offline / Local Mode
+                </span>
+              )}
+              {connectionStatus === 'reconnecting' && (
+                <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                  Reconnecting…
                 </span>
               )}
             </div>
@@ -140,6 +159,7 @@ export function WatchRoomScreen({
               currentUser={currentUser}
               driftMs={driftMs}
               onSimulateDrift={onSimulateDrift}
+              sync={playbackSync}
             />
             {/* Smooth floating reactions overlay */}
             <FloatingReactions reactions={floatingReactions} />
@@ -216,13 +236,19 @@ export function WatchRoomScreen({
                 isHost={currentUser.isHost}
                 onSelectMovie={onSelectMovieFromPlaylist}
                 onOpenDiscover={onOpenDiscover}
+                onRemoveItem={onRemoveFromPlaylist}
+                onMoveItem={onMovePlaylistItem}
               />
             )}
 
             {activeTab === 'poll' && (
               <PollPanel
-                initialPoll={initialPoll}
+                key={poll?.id ?? 'no-poll'}
+                poll={poll}
+                isHost={currentUser.isHost}
                 onVoteCast={onVoteCast}
+                onCreatePoll={onCreatePoll}
+                onClosePoll={onClosePoll}
               />
             )}
           </div>

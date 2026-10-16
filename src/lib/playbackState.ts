@@ -1,42 +1,34 @@
-// Typed playback state for synchronized video playback
-// All timestamps are epoch milliseconds unless otherwise noted.
-// Command versions are monotonically increasing per room.
+// Types for synchronized video playback.
+// All timestamps are epoch milliseconds on the SERVER clock unless noted.
 
-export interface PlaybackState {
-  videoId: string;
+/** The room's shared playback state, as stored in `room_playback`. */
+export interface PlaybackSnapshot {
+  movieId: string;
   isPlaying: boolean;
-  currentTime: number; // seconds, 0-based
-  playbackRate: number; // e.g. 1.0 = normal, -1.0 = reverse, 2.0 = double-speed
-  commandVersion: number; // monotonically increasing, last applied version by this client
-  serverTimestamp: number; // epoch ms when this state was confirmed by server
+  /** Seconds into the video at `updatedAtMs` */
+  position: number;
+  /** Playback speed (1 = normal) */
+  rate: number;
+  /** Server time when this state was set */
+  updatedAtMs: number;
+  /** Increases with every change; higher wins */
+  version: number;
+  /** Auth user id of the host who set it */
+  updatedBy: string;
 }
 
-export interface PlaybackCommand {
-  type: 'play' | 'pause' | 'seek' | 'video-change';
-  version: number; // command version, monotonically increasing
-  payload: PlaybackCommandPayload;
-  serverTimestamp: number; // epoch ms when command was generated on server
+/** What a viewer's player should do to stay in sync. */
+export type CorrectionDecision =
+  | { kind: 'none' }
+  | { kind: 'seek' }
+  | { kind: 'rate'; rate: number };
+
+/** One round trip to the server clock, all values in epoch ms. */
+export interface ClockSample {
+  /** Local time just before the request */
+  sentAt: number;
+  /** Server time reported in the response */
+  serverMs: number;
+  /** Local time when the response arrived */
+  receivedAt: number;
 }
-
-export interface PlaybackCommandPayload {
-  videoId?: string; // for 'video-change' command
-  currentTime?: number; // for 'seek' command, seconds
-  isPlaying?: boolean; // for 'play'/'pause' command
-}
-
-export interface PlaybackUpdate {
-  state: PlaybackState;
-  /** How many ms the state is ahead of the server (positive = ahead, negative = behind) */
-  driftMs: number;
-  /** True if this state update is newer than what the client last applied */
-  isNewer: boolean;
-}
-
-// Command version starting value per room
-export const INITIAL_COMMAND_VERSION = 0;
-
-// Drift correction thresholds
-export const DRIFT_SEEK_THRESHOLD_MS = 500;   // If drift exceeds this, seek instead of rate adjust
-export const DRIFT_RATE_ADJUST_MS = 200;      // How aggressively to correct rate
-export const MAX_PLAYBACK_RATE = 4;           // Maximum allowed playbackRate
-export const MIN_PLAYBACK_RATE = 0.25;        // Minimum allowed playbackRate

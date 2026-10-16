@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Smile, Shield } from 'lucide-react';
 import type { ChatMessage, User } from '../../types';
+import { REACTION_EMOJIS } from '../../lib/reactions';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -8,8 +9,6 @@ interface ChatPanelProps {
   onSendMessage: (text: string) => void;
   onTriggerReaction: (emoji: string) => void;
 }
-
-const EMOJI_LIST = ['🔥', '❤️', '🍿', '🚀', '😱', '👏'];
 
 export function ChatPanel({
   messages,
@@ -104,7 +103,7 @@ export function ChatPanel({
             Reactions
           </span>
           <div className="flex items-center gap-1">
-            {EMOJI_LIST.map((emoji) => (
+            {REACTION_EMOJIS.map((emoji) => (
               <button
                 key={emoji}
                 type="button"
@@ -127,6 +126,7 @@ export function ChatPanel({
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
+            maxLength={500}
             placeholder="Send message to theater..."
             className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] py-2.5 pl-3.5 pr-10 text-xs text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
           />

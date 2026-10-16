@@ -10,33 +10,54 @@ import { StageOverview } from './components/StageOverview';
 import { isSupabaseConfigured } from './lib/supabase';
 import { getOrCreateSessionUser, saveSessionUser } from './lib/session';
 import { ensureSignedIn } from './lib/auth';
+import { isNewerSnapshot } from './lib/playbackService';
+import type { PlaybackSnapshot } from './lib/playbackState';
 import {
   createRoom as apiCreateRoom,
   joinRoom as apiJoinRoom,
   getRoomMembers as apiGetRoomMembers,
   leaveRoom as apiLeaveRoom,
-  transferRoomHost as apiTransferRoomHost,
-  setRoomMovie as apiSetRoomMovie
+  transferRoomHost as apiTransferRoomHost
 } from './services/roomService';
+import {
+  closePoll as apiClosePoll,
+  createPoll as apiCreatePoll,
+  fetchActivePoll,
+  fetchMessages,
+  fetchPlayback,
+  fetchPlaylist,
+  mapMessage,
+  mapPlayback,
+  measureClockOffset,
+  playlistAdd as apiPlaylistAdd,
+  playlistMove as apiPlaylistMove,
+  playlistRemove as apiPlaylistRemove,
+  sendMessage as apiSendMessage,
+  setPlayback as apiSetPlayback,
+  votePoll as apiVotePoll,
+} from './services/roomFeaturesService';
 import { useRoomRealtime } from './hooks/useRoomRealtime';
-import { 
-  mockRoom, 
-  mockMovies, 
-  mockPlaylist, 
-  mockChatMessages, 
-  mockPoll 
+import {
+  mockRoom,
+  mockMovies,
+  mockPlaylist,
+  mockChatMessages,
+  mockPoll
 } from './mockData';
-import type { 
-  User, 
-  Room, 
-  Movie, 
-  PlaylistItem, 
-  ChatMessage, 
-  Poll, 
-  ViewMode, 
-  Toast, 
-  FloatingReaction 
+import type {
+  User,
+  Room,
+  Movie,
+  PlaylistItem,
+  ChatMessage,
+  Poll,
+  ViewMode,
+  Toast,
+  FloatingReaction
 } from './types';
+
+/** Minimum gap between two reactions from this browser */
+const REACTION_COOLDOWN_MS = 250;
 
 export default function App() {
   // Navigation View State
@@ -51,8 +72,19 @@ export default function App() {
   const [members, setMembers] = useState<User[]>([currentUser]);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>(mockPlaylist);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(mockChatMessages);
-  const [poll] = useState<Poll>(mockPoll);
+  const [poll, setPoll] = useState<Poll | null>(mockPoll);
   const [driftMs, setDriftMs] = useState<number>(24);
+
+  // Shared state for real (Supabase) rooms
+  const [playback, setPlayback] = useState<PlaybackSnapshot | null>(null);
+  const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  const [onlineIds, setOnlineIds] = useState<Set<string> | null>(null);
+  const isRealRoom = !activeRoom.isMockData;
+  const activeRoomIdRef = useRef(activeRoom.id);
+  const lastReactionAtRef = useRef(0);
+  useEffect(() => {
+    activeRoomIdRef.current = activeRoom.id;
+  }, [activeRoom.id]);
 
   // Modals & Floating Overlays
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -88,6 +120,74 @@ export default function App() {
       });
   }, [addToast]);
 
+  // --- Shared room state helpers ---
+
+  /** Keeps only the newest playback state (ignores duplicates / stale echoes) */
+  const applyPlayback = useCallback((snapshot: PlaybackSnapshot | null | undefined) => {
+    if (!snapshot) return;
+    setPlayback((prev) => (isNewerSnapshot(prev, snapshot) ? snapshot : prev));
+  }, []);
+
+  const appendMessage = useCallback((message: ChatMessage) => {
+    setChatMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]));
+  }, []);
+
+  /** Shows a floating emoji over the player for a couple of seconds */
+  const showReaction = useCallback((emoji: string) => {
+    const newReaction: FloatingReaction = {
+      id: `rx-${Date.now()}-${Math.random()}`,
+      emoji,
+      x: Math.floor(Math.random() * 70) + 15,
+      createdAt: Date.now(),
+    };
+
+    setFloatingReactions((prev) => [...prev, newReaction].slice(-30));
+
+    setTimeout(() => {
+      setFloatingReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
+    }, 1800);
+  }, []);
+
+  /** Clears room data before entering a real room (it is loaded from the server) */
+  const resetRoomData = (mode: 'real' | 'demo') => {
+    setPlayback(null);
+    setOnlineIds(null);
+    if (mode === 'real') {
+      setChatMessages([]);
+      setPlaylist([]);
+      setPoll(null);
+    } else {
+      setChatMessages(mockChatMessages);
+      setPlaylist(mockPlaylist);
+      setPoll(mockPoll);
+    }
+  };
+
+  /** Loads everything for the current real room (join, reconnect, tab refocus) */
+  const resyncRoom = useCallback(async () => {
+    if (activeRoom.isMockData) return;
+    const roomId = activeRoom.id;
+    const userId = currentUser.id;
+
+    const [roomMembers, snapshot, messages, items, activePoll] = await Promise.all([
+      apiGetRoomMembers(roomId, userId),
+      fetchPlayback(roomId),
+      fetchMessages(roomId),
+      fetchPlaylist(roomId, mockMovies),
+      fetchActivePoll(roomId, userId),
+    ]);
+    if (activeRoomIdRef.current !== roomId) return; // left the room meanwhile
+
+    if (roomMembers.length > 0) setMembers(roomMembers);
+    applyPlayback(snapshot);
+    setChatMessages(messages);
+    setPlaylist(items);
+    setPoll(activePoll);
+
+    const offset = await measureClockOffset();
+    if (offset !== null && activeRoomIdRef.current === roomId) setClockOffsetMs(offset);
+  }, [activeRoom.id, activeRoom.isMockData, currentUser.id, applyPlayback]);
+
   // Join Room by Code (Used by modal and invite URLs).
   // Returns an error message, or null on success.
   const handleJoinRoom = useCallback(async (code: string): Promise<string | null> => {
@@ -116,6 +216,7 @@ export default function App() {
       // Set active movie
       const matchedMovie = mockMovies.find((m) => m.id === room.currentMovieId) || mockMovies[0];
       setCurrentMovie(matchedMovie);
+      resetRoomData(room.isMockData ? 'demo' : 'real');
       setActiveRoom(room);
       setCurrentView('room');
 
@@ -124,18 +225,20 @@ export default function App() {
       newUrl.searchParams.set('room', room.code);
       window.history.replaceState({}, '', newUrl.toString());
 
-      // Add system announcement in chat
-      const joinMsg: ChatMessage = {
-        id: `sys-${Date.now()}`,
-        userId: 'system',
-        userName: 'Watch Party Bot',
-        userAvatar: '',
-        userColor: '#94A3B8',
-        text: `👋 ${updatedUser.name} connected to room (${room.code}). Synced with theater.`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isSystem: true,
-      };
-      setChatMessages((prev) => [...prev, joinMsg]);
+      // Demo rooms get a local announcement; real rooms load shared chat
+      if (room.isMockData) {
+        const joinMsg: ChatMessage = {
+          id: `sys-${Date.now()}`,
+          userId: 'system',
+          userName: 'Watch Party Bot',
+          userAvatar: '',
+          userColor: '#94A3B8',
+          text: `👋 ${updatedUser.name} connected to room (${room.code}). Synced with theater.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          isSystem: true,
+        };
+        setChatMessages((prev) => [...prev, joinMsg]);
+      }
       addToast(`Connected to room ${room.code}!`, 'success');
       return null;
     } catch (err: unknown) {
@@ -160,24 +263,69 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [handleJoinRoom]);
 
-  // Real-time synchronization hook for members and room state
-  useRoomRealtime({
-    room: currentView === 'room' ? activeRoom : null,
+  // Real-time synchronization for everything shared in the room.
+  // Stays connected while in a real room, even on the discover page.
+  const { status: realtimeStatus, sendReaction } = useRoomRealtime({
+    room: isRealRoom ? activeRoom : null,
     currentUser,
-    onMembersUpdate: (updatedMembers) => {
-      setMembers(updatedMembers);
-    },
-    onRoomUpdate: (updatedRoom) => {
-      setActiveRoom((prev) => ({ ...prev, ...updatedRoom }));
-      if (updatedRoom.currentMovieId) {
-        const movie = mockMovies.find((m) => m.id === updatedRoom.currentMovieId);
-        if (movie) setCurrentMovie(movie);
-      }
-      if (updatedRoom.hostId) {
-        setCurrentUser((prev) => ({ ...prev, isHost: prev.id === updatedRoom.hostId }));
-      }
+    handlers: {
+      onMembersChanged: () => {
+        const roomId = activeRoom.id;
+        void apiGetRoomMembers(roomId, currentUser.id).then((list) => {
+          if (activeRoomIdRef.current === roomId && list.length > 0) setMembers(list);
+        });
+      },
+      onRoomUpdate: (updatedRoom) => {
+        setActiveRoom((prev) => ({ ...prev, ...updatedRoom }));
+        if (updatedRoom.currentMovieId) {
+          const movie = mockMovies.find((m) => m.id === updatedRoom.currentMovieId);
+          if (movie) setCurrentMovie(movie);
+        }
+        if (updatedRoom.hostId) {
+          setCurrentUser((prev) => ({ ...prev, isHost: prev.id === updatedRoom.hostId }));
+        }
+      },
+      onOnlineUsersChange: setOnlineIds,
+      onPlaybackRow: (row) => applyPlayback(mapPlayback(row)),
+      onMessageRow: (row) => appendMessage(mapMessage(row)),
+      onPlaylistChanged: () => {
+        const roomId = activeRoom.id;
+        void fetchPlaylist(roomId, mockMovies).then((items) => {
+          if (activeRoomIdRef.current === roomId) setPlaylist(items);
+        });
+      },
+      onPollsChanged: () => {
+        const roomId = activeRoom.id;
+        void fetchActivePoll(roomId, currentUser.id).then((activePoll) => {
+          if (activeRoomIdRef.current === roomId) setPoll(activePoll);
+        });
+      },
+      onReaction: ({ emoji }) => showReaction(emoji),
+      onResync: () => {
+        void resyncRoom();
+      },
     },
   });
+
+  // In real rooms the shared playback state decides which movie is on screen
+  const playbackMovie = isRealRoom && playback ? mockMovies.find((m) => m.id === playback.movieId) : undefined;
+  const displayedMovie = playbackMovie ?? currentMovie;
+
+  // Online status comes from Realtime presence in real rooms
+  const displayedMembers = isRealRoom && onlineIds
+    ? members.map((m) => ({ ...m, isOnline: m.id === currentUser.id || onlineIds.has(m.id) }))
+    : members;
+
+  // Host published a play / pause / seek
+  const handleHostPlaybackChange = useCallback(async (state: { isPlaying: boolean; position: number }) => {
+    if (activeRoom.isMockData) return;
+    const { data, error } = await apiSetPlayback(activeRoom.code, { movieId: displayedMovie.id, ...state });
+    if (error) {
+      addToast(error, 'error');
+      return;
+    }
+    applyPlayback(data);
+  }, [activeRoom.isMockData, activeRoom.code, displayedMovie.id, addToast, applyPlayback]);
 
   // Switch movie to play in room
   const handlePlayMovie = async (movie: Movie) => {
@@ -192,11 +340,18 @@ export default function App() {
         addToast('Only the host can change the movie.', 'warning');
         return;
       }
-      const { error } = await apiSetRoomMovie(activeRoom.code, movie.id);
+      // Everyone switches together: the movie is part of the shared playback state
+      const { data, error } = await apiSetPlayback(activeRoom.code, { movieId: movie.id, isPlaying: true, position: 0 });
       if (error) {
         addToast(error, 'error');
         return;
       }
+      applyPlayback(data);
+      setCurrentMovie(movie);
+      setActiveRoom((prev) => ({ ...prev, currentMovieId: movie.id }));
+      setCurrentView('room');
+      addToast(`Switched playback to ${movie.title}`, 'success');
+      return;
     }
 
     setCurrentMovie(movie);
@@ -217,8 +372,31 @@ export default function App() {
     addToast(`Switched playback to ${movie.title}`, 'success');
   };
 
+  // --- Shared queue ---
+
+  const reloadPlaylist = async () => {
+    const roomId = activeRoom.id;
+    const items = await fetchPlaylist(roomId, mockMovies);
+    if (activeRoomIdRef.current === roomId) setPlaylist(items);
+  };
+
   // Add to queue
-  const handleAddToPlaylist = (movie: Movie) => {
+  const handleAddToPlaylist = async (movie: Movie) => {
+    if (isRealRoom) {
+      if (!currentUser.isHost) {
+        addToast('Only the host can add films to the queue.', 'warning');
+        return;
+      }
+      const { error } = await apiPlaylistAdd(activeRoom.code, movie.id);
+      if (error) {
+        addToast(error, 'warning');
+        return;
+      }
+      await reloadPlaylist();
+      addToast(`Added "${movie.title}" to room playlist!`, 'success');
+      return;
+    }
+
     const exists = playlist.some((item) => item.movieId === movie.id);
     if (exists) {
       addToast(`"${movie.title}" is already queued in this room.`, 'warning');
@@ -239,6 +417,33 @@ export default function App() {
 
     setPlaylist((prev) => [...prev, newItem]);
     addToast(`Added "${movie.title}" to room playlist!`, 'success');
+  };
+
+  const handleRemoveFromPlaylist = async (item: PlaylistItem) => {
+    if (isRealRoom) {
+      const { error } = await apiPlaylistRemove(activeRoom.code, item.id);
+      if (error) addToast(error, 'error');
+      else await reloadPlaylist();
+      return;
+    }
+    setPlaylist((prev) => prev.filter((p) => p.id !== item.id));
+  };
+
+  const handleMovePlaylistItem = async (item: PlaylistItem, direction: -1 | 1) => {
+    if (isRealRoom) {
+      const { error } = await apiPlaylistMove(activeRoom.code, item.id, direction);
+      if (error) addToast(error, 'error');
+      else await reloadPlaylist();
+      return;
+    }
+    setPlaylist((prev) => {
+      const from = prev.findIndex((p) => p.id === item.id);
+      const to = from + direction;
+      if (from < 0 || to < 0 || to >= prev.length) return prev;
+      const next = [...prev];
+      [next[from], next[to]] = [next[to], next[from]];
+      return next;
+    });
   };
 
   // Create Room Handler. Returns an error message, or null on success.
@@ -278,6 +483,7 @@ export default function App() {
     }
 
     setCurrentUser(updatedUser);
+    resetRoomData(room.isMockData ? 'demo' : 'real');
     setActiveRoom(room);
     setCurrentMovie(chosenMovie);
     setMembers([updatedUser]);
@@ -293,7 +499,14 @@ export default function App() {
   };
 
   // Send Chat Message
-  const handleSendMessage = (text: string) => {
+  const handleSendMessage = async (text: string) => {
+    if (isRealRoom) {
+      const { data, error } = await apiSendMessage(activeRoom.code, text);
+      if (error) addToast(error, 'error');
+      else if (data) appendMessage(data);
+      return;
+    }
+
     const newMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       userId: currentUser.id,
@@ -306,26 +519,73 @@ export default function App() {
     setChatMessages((prev) => [...prev, newMsg]);
   };
 
-  // Trigger floating reaction animation
+  // Trigger floating reaction animation (and send it to the room)
   const handleTriggerReaction = (emoji: string) => {
-    const newReaction: FloatingReaction = {
-      id: `rx-${Date.now()}-${Math.random()}`,
-      emoji,
-      x: Math.floor(Math.random() * 70) + 15,
-      createdAt: Date.now(),
-    };
-
-    setFloatingReactions((prev) => [...prev, newReaction]);
-
-    setTimeout(() => {
-      setFloatingReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
-    }, 1800);
+    const now = Date.now();
+    if (now - lastReactionAtRef.current < REACTION_COOLDOWN_MS) return;
+    lastReactionAtRef.current = now;
+    showReaction(emoji);
+    if (isRealRoom) sendReaction(emoji);
   };
 
-  // Poll Vote Cast
-  const handleVoteCast = (optionId: string) => {
+  // --- Polls (each returns an error message, or null on success) ---
+
+  const reloadPoll = async () => {
+    const roomId = activeRoom.id;
+    const activePoll = await fetchActivePoll(roomId, currentUser.id);
+    if (activeRoomIdRef.current === roomId) setPoll(activePoll);
+  };
+
+  const handleVoteCast = async (optionId: string): Promise<string | null> => {
+    if (!poll) return 'There is no active poll.';
     const selectedOption = poll.options.find((o) => o.id === optionId);
+
+    if (isRealRoom) {
+      const { error } = await apiVotePoll(activeRoom.code, poll.id, optionId);
+      if (error) return error;
+      await reloadPoll();
+    } else {
+      if (poll.userVotedOptionId) return 'You have already voted in this poll.';
+      setPoll({
+        ...poll,
+        options: poll.options.map((o) => (o.id === optionId ? { ...o, votes: o.votes + 1 } : o)),
+        totalVotes: poll.totalVotes + 1,
+        userVotedOptionId: optionId,
+      });
+    }
     addToast(`Vote cast for "${selectedOption?.title || 'Selected option'}"!`, 'success');
+    return null;
+  };
+
+  const handleCreatePoll = async (question: string, options: string[]): Promise<string | null> => {
+    if (isRealRoom) {
+      const { error } = await apiCreatePoll(activeRoom.code, question, options);
+      if (error) return error;
+      await reloadPoll();
+    } else {
+      setPoll({
+        id: `poll-${Date.now()}`,
+        question,
+        options: options.map((title, i) => ({ id: String(i), title, votes: 0 })),
+        totalVotes: 0,
+        active: true,
+      });
+    }
+    addToast('Poll started!', 'success');
+    return null;
+  };
+
+  const handleClosePoll = async (): Promise<string | null> => {
+    if (!poll) return null;
+    if (isRealRoom) {
+      const { error } = await apiClosePoll(activeRoom.code, poll.id);
+      if (error) return error;
+      await reloadPoll();
+    } else {
+      setPoll(null);
+    }
+    addToast('Poll closed.', 'info');
+    return null;
   };
 
   // Transfer Host Role
@@ -377,6 +637,7 @@ export default function App() {
         addToast(error, 'warning');
       }
       // Back to the local demo room so nothing acts on the room we left
+      resetRoomData('demo');
       setActiveRoom(mockRoom);
       setMembers([{ ...currentUser, isHost: false }]);
       setCurrentUser((prev) => ({ ...prev, isHost: false }));
@@ -391,7 +652,7 @@ export default function App() {
     addToast('Left screening room.', 'info');
   };
 
-  // Simulate network jitter
+  // Simulate network jitter (demo rooms; real rooms measure real drift)
   const handleSimulateDrift = () => {
     const randomDrift = Math.floor(Math.random() * 320) + 15;
     setDriftMs(randomDrift);
@@ -465,7 +726,7 @@ export default function App() {
                     <StageOverview
                       room={activeRoom}
                       currentUser={currentUser}
-                      members={members}
+                      members={displayedMembers}
                       driftMs={driftMs}
                       onSimulateDrift={handleSimulateDrift}
                       onToggleHostRole={handleToggleHostRole}
@@ -480,25 +741,35 @@ export default function App() {
           /* Watch Room View Screen */
           <WatchRoomScreen
             room={activeRoom}
-            currentMovie={currentMovie}
+            currentMovie={displayedMovie}
             currentUser={currentUser}
-            members={members}
+            members={displayedMembers}
             playlist={playlist}
             chatMessages={chatMessages}
-            initialPoll={poll}
+            poll={poll}
             driftMs={driftMs}
             onLeaveRoom={handleLeaveRoom}
             onSelectMovieFromPlaylist={(item) => {
               const matched = mockMovies.find((m) => m.id === item.movieId);
-              if (matched) handlePlayMovie(matched);
+              if (matched) void handlePlayMovie(matched);
             }}
+            onRemoveFromPlaylist={handleRemoveFromPlaylist}
+            onMovePlaylistItem={handleMovePlaylistItem}
             onSendMessage={handleSendMessage}
             onTriggerReaction={handleTriggerReaction}
             onVoteCast={handleVoteCast}
+            onCreatePoll={handleCreatePoll}
+            onClosePoll={handleClosePoll}
             onTransferHost={handleTransferHost}
             onSimulateDrift={handleSimulateDrift}
             onOpenDiscover={() => setCurrentView('discover')}
             floatingReactions={floatingReactions}
+            playbackSync={isRealRoom ? {
+              playback,
+              clockOffsetMs,
+              onHostChange: (state) => void handleHostPlaybackChange(state),
+            } : undefined}
+            connectionStatus={realtimeStatus}
           />
         )}
       </main>

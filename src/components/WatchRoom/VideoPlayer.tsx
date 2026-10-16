@@ -1,18 +1,29 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { 
-  Play, 
-  Pause, 
-  Volume2, 
-  VolumeX, 
-  Maximize, 
-  Minimize, 
-  RotateCcw, 
-  Shield, 
+import { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
+  Maximize,
+  Minimize,
+  RotateCcw,
+  Shield,
   AlertCircle,
   RefreshCw
 } from 'lucide-react';
 import type { Movie } from '../../types';
-import { createPlaybackService } from '../../lib/playbackService';
+import type { PlaybackSnapshot } from '../../lib/playbackState';
+import { expectedPosition, decideCorrection, HOST_REPUBLISH_MS } from '../../lib/playbackService';
+
+/** Shared-playback wiring for real (Supabase) rooms. */
+export interface PlaybackSyncProps {
+  /** The room's shared state (null until the host first plays) */
+  playback: PlaybackSnapshot | null;
+  /** Server clock minus local clock, in ms */
+  clockOffsetMs: number;
+  /** Host only: publish a new shared state */
+  onHostChange: (state: { isPlaying: boolean; position: number }) => void;
+}
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -21,6 +32,8 @@ interface VideoPlayerProps {
   currentUser: { id: string; name: string; isHost: boolean };
   driftMs: number;
   onSimulateDrift: () => void;
+  /** Present in real rooms: enables synchronized playback */
+  sync?: PlaybackSyncProps;
 }
 
 /**
@@ -33,7 +46,12 @@ function formatTime(seconds: number): string {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimulateDrift }: VideoPlayerProps) {
+/** How often viewers compare their player with the shared timeline */
+const FOLLOWER_CHECK_MS = 1000;
+/** How often the host checks it has not drifted from what it published */
+const HOST_CHECK_MS = 5000;
+
+export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDrift, sync }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -46,107 +64,146 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
   const [hasError, setHasError] = useState(false);
   const [showControls, setShowControls] = useState(true);
 
-  // --- Synchronized Playback State ---
-  // Create the playback service using room ID, user ID, and host status
-  const playbackService = useMemo(() => {
-    if (!room || !currentUser) {
-      // Fallback service without realtime if room/user not yet available
-      return createPlaybackService('fallback-room', currentUser?.id || 'user-unknown', isHost);
-    }
-    return createPlaybackService(room.id, currentUser.id, isHost);
-  }, [room, currentUser, isHost]);
-
-  // Set the video element reference when the video mounts
+  // --- Synchronized playback state (real rooms only) ---
+  const isSynced = Boolean(sync);
+  const playback = sync?.playback ?? null;
+  const clockOffsetMs = sync?.clockOffsetMs ?? 0;
+  // The parent passes a new function each render; keep the latest in a
+  // ref so timers below are not restarted on every render.
+  const onHostChangeRef = useRef(sync?.onHostChange);
   useEffect(() => {
-    playbackService.setVideoElement(videoRef.current);
-    // On mount, synchronize video from last known state in Supabase
-    playbackService._synchronizeVideoFromState();
-    // Start drift monitoring
-    playbackService.startDriftMonitoring();
-    return () => {
-      playbackService.stopDriftMonitoring();
-      playbackService.cleanup();
-    };
-  }, [playbackService]);
+    onHostChangeRef.current = sync?.onHostChange;
+  });
 
-  // Set video ID when movie changes
-  useEffect(() => {
-    playbackService.setVideoId(movie.id);
-    // Reset video position when movie changes
-    if (videoRef.current) {
-      videoRef.current.currentTime = 0;
-      videoRef.current.load();
-    }
-  }, [movie.id, playbackService]);
+  /** Browser blocked autoplay: the viewer must click once to join */
+  const [needsGesture, setNeedsGesture] = useState(false);
+  /** Measured drift shown in the HUD (ms, local − expected) */
+  const [measuredDriftMs, setMeasuredDriftMs] = useState<number | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
+  const driftRef = useRef<number | null>(null);
+  const bufferingRef = useRef(false);
+  const lastHostAppliedVersionRef = useRef<number>(-1);
+  const seekPublishTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  // Remote playback commands: the previous subscription here opened and
-  // closed a realtime channel on every render (for a table that does not
-  // exist), flooding Supabase. It is disabled until synchronized playback
-  // is rebuilt on secure realtime channels.
-
-  // Update local UI state from playback service state
-  useEffect(() => {
-    const state = playbackService.getLocalState();
-    // Use setTimeout to avoid setState-in-effect warning;
-    // the callback runs after the current render cycle completes.
-    setTimeout(() => {
-      setIsPlaying(state.isPlaying);
-      setCurrentTime(state.currentTime);
-    }, 0);
-  }, [playbackService]);
-
-  // Sync currentTime from video element timeupdate
-  useEffect(() => {
-    if (!videoRef.current) return;
-
-    const handleTimeUpdate = () => {
-      setCurrentTime(videoRef.current.currentTime);
-    };
-
-    const handlePlaying = () => {
-      setIsPlaying(true);
-    };
-
-    const handlePause = () => {
-      setIsPlaying(false);
-    };
-
-    const handleDurationUpdate = () => {
-      setDuration(videoRef.current.duration || 0);
-    };
-
-    const handleError = () => {
-      setHasError(true);
-    };
-
-    videoRef.current.addEventListener('timeupdate', handleTimeUpdate);
-    videoRef.current.addEventListener('playing', handlePlaying);
-    videoRef.current.addEventListener('pause', handlePause);
-    videoRef.current.addEventListener('durationchange', handleDurationUpdate);
-    videoRef.current.addEventListener('error', handleError);
-
-    return () => {
-      const video = videoRef.current;
-      if (!video) return;
-
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('playing', handlePlaying);
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('durationchange', handleDurationUpdate);
-      video.removeEventListener('error', handleError);
-    };
+  const showHint = useCallback((text: string) => {
+    setHint(text);
+    setTimeout(() => setHint(null), 2200);
   }, []);
+
+  /**
+   * Moves the local player onto the shared timeline.
+   * Viewers call this continuously; the host only when adopting a state
+   * someone else published (e.g. right after becoming host or rejoining).
+   */
+  const reconcile = useCallback((force = false) => {
+    const video = videoRef.current;
+    if (!video || !playback || playback.movieId !== movie.id) return;
+    if (video.readyState < 1) return; // metadata not loaded yet
+
+    const expected = expectedPosition(playback, Date.now() + clockOffsetMs, video.duration);
+
+    if (playback.isPlaying && video.paused && !video.ended) {
+      video.play().then(
+        () => setNeedsGesture(false),
+        (err: unknown) => {
+          if (err instanceof DOMException && err.name === 'NotAllowedError') setNeedsGesture(true);
+        }
+      );
+    } else if (!playback.isPlaying && !video.paused) {
+      video.pause();
+    }
+
+    // Never fight the network while the player is buffering
+    if (bufferingRef.current && !force) return;
+
+    const drift = (video.currentTime - expected) * 1000;
+    driftRef.current = Math.round(drift);
+    const decision = force && Math.abs(drift) > 100 ? { kind: 'seek' as const } : decideCorrection(drift, playback.isPlaying);
+    if (decision.kind === 'seek') {
+      video.currentTime = expected;
+      video.playbackRate = 1;
+    } else if (decision.kind === 'rate') {
+      video.playbackRate = decision.rate;
+    } else if (video.playbackRate !== 1) {
+      video.playbackRate = 1;
+    }
+  }, [playback, movie.id, clockOffsetMs]);
+
+  // Viewers: follow every new shared state immediately, then keep checking.
+  useEffect(() => {
+    if (!isSynced || isHost) return;
+    reconcile();
+    const timer = setInterval(() => reconcile(), FOLLOWER_CHECK_MS);
+    return () => clearInterval(timer);
+  }, [isSynced, isHost, reconcile]);
+
+  // Host: adopt shared states published by someone else (previous host,
+  // own earlier session) once, without fighting local control afterwards.
+  useEffect(() => {
+    if (!isSynced || !isHost || !playback) return;
+    if (playback.version <= lastHostAppliedVersionRef.current) return;
+    lastHostAppliedVersionRef.current = playback.version;
+    if (playback.updatedBy !== currentUser.id) reconcile(true);
+  }, [isSynced, isHost, playback, currentUser.id, reconcile]);
+
+  // Host: if the local player drifts from what was published (buffering,
+  // slow device), publish the real position so viewers follow the host.
+  useEffect(() => {
+    if (!isSynced || !isHost) return;
+    const timer = setInterval(() => {
+      const video = videoRef.current;
+      if (!video || !playback || playback.movieId !== movie.id || bufferingRef.current || video.paused) return;
+      const expected = expectedPosition(playback, Date.now() + clockOffsetMs, video.duration);
+      if (Math.abs(video.currentTime - expected) * 1000 > HOST_REPUBLISH_MS) {
+        onHostChangeRef.current?.({ isPlaying: true, position: video.currentTime });
+      }
+    }, HOST_CHECK_MS);
+    return () => clearInterval(timer);
+  }, [isSynced, isHost, playback, movie.id, clockOffsetMs]);
+
+  // Refresh the drift readout once per second
+  useEffect(() => {
+    if (!isSynced) return;
+    const timer = setInterval(() => setMeasuredDriftMs(driftRef.current), 1000);
+    return () => clearInterval(timer);
+  }, [isSynced]);
+
+  // Reload the video element when the movie changes
+  useEffect(() => {
+    videoRef.current?.load();
+  }, [movie.id]);
 
   // --- Playback Controls ---
 
+  const publish = (playing: boolean) => {
+    const video = videoRef.current;
+    if (video) onHostChangeRef.current?.({ isPlaying: playing, position: video.currentTime });
+  };
+
+  /** Viewers who are blocked by autoplay rules join with one click */
+  const joinPlayback = () => {
+    setNeedsGesture(false);
+    videoRef.current?.play().then(() => reconcile(true), () => setNeedsGesture(true));
+  };
+
   const togglePlay = () => {
     if (!videoRef.current) return;
-    
+
+    if (isSynced && !isHost) {
+      if (needsGesture) joinPlayback();
+      else showHint('Only the host controls playback');
+      return;
+    }
+
     if (videoRef.current.paused) {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => setHasError(true));
+      videoRef.current.play().then(() => {
+        setIsPlaying(true);
+        if (isSynced) publish(true);
+      }).catch(() => setHasError(true));
     } else {
       videoRef.current.pause();
       setIsPlaying(false);
+      if (isSynced) publish(false);
     }
   };
 
@@ -157,10 +214,19 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isSynced && !isHost) {
+      showHint('Only the host controls playback');
+      return;
+    }
     const newTime = parseFloat(e.target.value);
     if (videoRef.current) {
       videoRef.current.currentTime = newTime;
       setCurrentTime(newTime);
+    }
+    if (isSynced) {
+      // Dragging fires many events: publish once the scrubber settles
+      clearTimeout(seekPublishTimerRef.current);
+      seekPublishTimerRef.current = setTimeout(() => publish(!videoRef.current?.paused), 250);
     }
   };
 
@@ -195,14 +261,68 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
   };
 
   const handleRestart = () => {
+    if (isSynced && !isHost) {
+      showHint('Only the host controls playback');
+      return;
+    }
     if (videoRef.current) {
       videoRef.current.currentTime = 0;
-      videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+      videoRef.current.play().then(() => {
+        setIsPlaying(true);
+        if (isSynced) publish(true);
+      }).catch(() => {});
     }
   };
 
+  // --- Video element events ---
+
+  const handleWaiting = () => {
+    bufferingRef.current = true;
+  };
+
+  const handlePlaying = () => {
+    setIsPlaying(true);
+    const wasBuffering = bufferingRef.current;
+    bufferingRef.current = false;
+    // Host recovered from buffering: viewers kept going, so re-align them
+    if (isSynced && isHost && wasBuffering) publish(true);
+  };
+
+  const handleCanPlay = () => {
+    bufferingRef.current = false;
+  };
+
+  const handleLoadedMetadata = () => {
+    setDuration(videoRef.current?.duration || 0);
+    // Late join / movie change: jump straight onto the shared timeline
+    if (isSynced && (!isHost || (playback && playback.updatedBy !== currentUser.id))) reconcile(true);
+  };
+
+  const handleEnded = () => {
+    setIsPlaying(false);
+    if (isSynced && isHost) publish(false);
+  };
+
   // --- Drift Display ---
-  const measuredDrift = playbackService.getDriftMs();
+  const syncedDriftLabel = isHost
+    ? 'Host clock'
+    : measuredDriftMs === null
+      ? 'Syncing…'
+      : `${Math.abs(measuredDriftMs)}ms Drift`;
+
+  const handleDriftClick = () => {
+    if (!isSynced) {
+      onSimulateDrift();
+    } else if (isHost) {
+      publish(!videoRef.current?.paused);
+      showHint('Position re-sent to everyone');
+    } else {
+      reconcile(true);
+      showHint('Re-synced to host');
+    }
+  };
+
+  const controlsLocked = isSynced && !isHost;
 
   return (
     <div
@@ -217,8 +337,13 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
         src={movie.videoUrl}
         poster={movie.backdropUrl}
         onTimeUpdate={handleTimeUpdate}
-        onPlaying={() => setIsPlaying(true)}
+        onPlaying={handlePlaying}
         onPause={() => setIsPlaying(false)}
+        onWaiting={handleWaiting}
+        onCanPlay={handleCanPlay}
+        onLoadedMetadata={handleLoadedMetadata}
+        onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
+        onEnded={handleEnded}
         onError={() => setHasError(true)}
         playsInline
         className="h-full w-full object-contain bg-black cursor-pointer"
@@ -282,22 +407,34 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
           {/* Real-time Drift Meter */}
           <button
             type="button"
-            onClick={onSimulateDrift}
-            title="Click to simulate network drift calibration"
+            onClick={handleDriftClick}
+            title={isSynced ? 'Click to re-sync now' : 'Click to simulate network drift calibration'}
             className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-black/60 px-3 py-1.5 text-[11px] font-mono text-emerald-300 backdrop-blur-md hover:bg-emerald-950/40 transition-colors"
           >
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
             </span>
-            <span>{driftMs}ms Drift</span>
+            <span>{isSynced ? syncedDriftLabel : `${driftMs}ms Drift`}</span>
             <RefreshCw className="h-3 w-3 text-emerald-400 ml-1" />
           </button>
         </div>
       </div>
 
+      {/* Viewer must click once when the browser blocks autoplay */}
+      {needsGesture && !hasError && (
+        <button
+          type="button"
+          onClick={joinPlayback}
+          className="absolute inset-0 z-10 m-auto flex h-fit w-fit flex-col items-center gap-2 rounded-2xl border border-white/20 bg-black/70 px-6 py-5 text-white shadow-2xl backdrop-blur-md transition-all hover:border-violet-400/50 hover:bg-violet-600/40"
+        >
+          <Play className="h-8 w-8 fill-white" />
+          <span className="text-xs font-semibold">The host is playing — click to join</span>
+        </button>
+      )}
+
       {/* Center Big Play Button (when paused) */}
-      {!isPlaying && !hasError && (
+      {!isPlaying && !hasError && !needsGesture && !controlsLocked && (
         <button
           type="button"
           onClick={togglePlay}
@@ -306,6 +443,13 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
         >
           <Play className="h-8 w-8 fill-white translate-x-0.5" />
         </button>
+      )}
+
+      {/* Short notices (e.g. "Only the host controls playback") */}
+      {hint && (
+        <div className="absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg border border-white/10 bg-black/80 px-3 py-1.5 text-[11px] font-semibold text-slate-200 backdrop-blur-md">
+          {hint}
+        </div>
       )}
 
       {/* Bottom Sleek Cinema Controls Bar */}
@@ -320,9 +464,12 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
             type="range"
             min={0}
             max={duration || 100}
+            step="any"
             value={currentTime}
             onChange={handleSeek}
-            className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-white/20 accent-violet-400 transition-all group-hover/scrubber:h-2"
+            disabled={controlsLocked}
+            aria-label="Seek"
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-white/20 accent-violet-400 transition-all group-hover/scrubber:h-2 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -332,8 +479,10 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
             <button
               type="button"
               onClick={togglePlay}
-              className="rounded-lg p-1.5 text-white hover:bg-white/10 transition-colors"
+              className="rounded-lg p-1.5 text-white hover:bg-white/10 transition-colors disabled:opacity-40"
               aria-label={isPlaying ? 'Pause' : 'Play'}
+              disabled={controlsLocked && !needsGesture}
+              title={controlsLocked ? 'Only the host controls playback' : undefined}
             >
               {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 fill-white" />}
             </button>
@@ -341,9 +490,10 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
             <button
               type="button"
               onClick={handleRestart}
-              className="rounded-lg p-1.5 text-slate-300 hover:text-white hover:bg-white/10 transition-colors"
-              title="Restart from beginning"
+              className="rounded-lg p-1.5 text-slate-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40"
+              title={controlsLocked ? 'Only the host controls playback' : 'Restart from beginning'}
               aria-label="Restart video"
+              disabled={controlsLocked}
             >
               <RotateCcw className="h-4 w-4" />
             </button>
