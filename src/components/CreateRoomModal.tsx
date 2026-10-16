@@ -103,6 +103,7 @@ export function CreateRoomModal({
             <input
               type="text"
               value={roomName}
+              maxLength={80}
               onChange={(e) => setRoomName(e.target.value)}
               placeholder="e.g. Friday Night Sci-Fi"
               className="mt-1.5 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
@@ -117,6 +118,7 @@ export function CreateRoomModal({
             <input
               type="text"
               value={hostName}
+              maxLength={40}
               onChange={(e) => setHostName(e.target.value)}
               placeholder="e.g. Alex Rivera"
               className="mt-1.5 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"

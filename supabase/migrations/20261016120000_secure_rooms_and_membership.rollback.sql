@@ -17,7 +17,7 @@ drop policy if exists "Members can view their rooms" on public.rooms;
 drop policy if exists "Members can view fellow members" on public.room_members;
 drop policy if exists "Members can update their own profile" on public.room_members;
 
--- Remove the NOT VALID data rules (they depend on wp_is_uuid).
+-- Remove the NOT VALID data rules.
 alter table public.rooms drop constraint if exists rooms_host_id_is_auth_user;
 alter table public.rooms drop constraint if exists rooms_code_format;
 alter table public.rooms drop constraint if exists rooms_name_length;
@@ -35,7 +35,8 @@ drop function if exists public.transfer_host(text, text);
 drop function if exists public.set_room_movie(text, text);
 drop function if exists public.wp_generate_room_code();
 drop function if exists public.wp_my_room_ids();
-drop function if exists public.wp_is_uuid(text);
+drop function if exists public.wp_is_auth_user(text);
+drop function if exists public.wp_check_profile(text, text, text);
 
 -- Restore open access (the previous behaviour).
 grant select, insert, update, delete on table public.rooms, public.room_members to anon, authenticated;

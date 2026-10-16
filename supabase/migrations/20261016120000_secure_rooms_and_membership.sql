@@ -7,20 +7,21 @@
 --   * Removes the old "allow everyone" (USING true) RLS policies and
 --     replaces them with member-only read access.
 --   * Blocks direct INSERT / UPDATE / DELETE from browsers. Rooms are
---     created, joined, left and handed over only through the four
---     functions below, which check permissions inside the database.
+--     created, joined, left and handed over only through the functions
+--     below, which check permissions inside the database.
 --   * Identity comes from Supabase Auth (anonymous sign-in). New rows
 --     store auth.uid() as text in the existing TEXT columns.
 --   * Legacy rows (made-up "usr_..." ids) stay in the table but are not
---     reachable from the app, because no signed-in user owns those ids.
+--     reachable from the app: no signed-in user owns those ids, and no
+--     function ever updates them.
 --
 -- Safety:
 --   * The whole file runs in one transaction: it applies completely or
 --     not at all.
 --   * Pre-flight checks stop the migration with a clear message if the
---     live schema differs from what the app expects.
---   * New CHECK constraints are added NOT VALID, so old rows are never
---     rejected; only new or changed rows must follow the rules.
+--     live schema or permissions differ from what it needs.
+--   * New CHECK constraints are added NOT VALID: existing rows are not
+--     checked, only rows inserted or updated afterwards.
 --   * Safe to re-run: every step checks before it changes anything.
 --
 -- Undo: see 20261016120000_secure_rooms_and_membership.rollback.sql
@@ -53,15 +54,15 @@ begin
     raise exception 'Pre-flight: missing columns: %', problem;
   end if;
 
-  -- 0b. Identity columns must be TEXT (we store auth.uid() as text).
+  -- 0b. Identity / code columns must be TEXT (we store auth.uid() as text).
   if exists (
     select 1 from information_schema.columns
     where table_schema = 'public'
-      and ((table_name = 'rooms' and column_name = 'host_id')
+      and ((table_name = 'rooms' and column_name in ('host_id', 'code'))
         or (table_name = 'room_members' and column_name = 'user_id'))
       and data_type <> 'text'
   ) then
-    raise exception 'Pre-flight: rooms.host_id / room_members.user_id are expected to be TEXT';
+    raise exception 'Pre-flight: rooms.host_id, rooms.code and room_members.user_id must be TEXT';
   end if;
 
   -- 0c. Primary keys must fill themselves in (we never send an id).
@@ -77,7 +78,8 @@ begin
   select string_agg(ic.table_name || '.' || ic.column_name, ', ') into problem
   from information_schema.columns ic
   where ic.table_schema = 'public' and ic.table_name in ('rooms', 'room_members')
-    and ic.is_nullable = 'NO' and ic.column_default is null and ic.is_identity = 'NO'
+    and ic.is_nullable = 'NO' and ic.column_default is null
+    and ic.is_identity = 'NO' and ic.is_generated = 'NEVER'
     and ic.column_name not in ('id', 'code', 'name', 'description', 'host_id', 'current_movie_id',
                                'is_private', 'created_at', 'updated_at', 'room_id', 'user_id',
                                'avatar', 'color', 'is_host', 'last_seen_at');
@@ -93,12 +95,32 @@ begin
     raise exception 'Pre-flight: duplicate room codes exist in rooms';
   end if;
 
-  -- 0f. Do not overwrite functions with our names that someone else wrote.
+  -- 0f. The functions run as the role executing this script. That role
+  --     must be able to see every row despite RLS, and read auth.users.
+  if exists (
+    select 1 from pg_class c
+    where c.oid in ('public.rooms'::regclass, 'public.room_members'::regclass)
+      and not (
+        (select r.rolbypassrls or r.rolsuper from pg_roles r where r.rolname = current_user)
+        or (pg_has_role(current_user, c.relowner, 'USAGE') and not c.relforcerowsecurity)
+      )
+  ) then
+    raise exception 'Pre-flight: role % cannot bypass RLS on rooms/room_members', current_user;
+  end if;
+  if to_regprocedure('auth.uid()') is null then
+    raise exception 'Pre-flight: auth.uid() not found (is this a Supabase database?)';
+  end if;
+  if to_regclass('auth.users') is null or not has_table_privilege('auth.users', 'select') then
+    raise exception 'Pre-flight: role % cannot read auth.users', current_user;
+  end if;
+
+  -- 0g. Do not overwrite functions with our names that someone else wrote.
   select string_agg(p.proname, ', ') into problem
   from pg_proc p
   where p.pronamespace = 'public'::regnamespace
     and p.proname in ('create_room', 'join_room', 'leave_room', 'transfer_host', 'set_room_movie',
-                      'wp_my_room_ids', 'wp_generate_room_code', 'wp_is_uuid')
+                      'wp_my_room_ids', 'wp_generate_room_code', 'wp_check_profile',
+                      'wp_is_auth_user')
     and coalesce(obj_description(p.oid, 'pg_proc'), '') not like 'watch-party:%';
   if problem is not null then
     raise exception 'Pre-flight: functions already exist with these names: %', problem;
@@ -110,10 +132,12 @@ end $$;
 -- ---------------------------------------------------------------------
 do $$
 begin
-  -- 1a. One membership row per user per room (needed for "join again").
+  -- 1a. One membership row per user per room (needed for "join again"
+  --     via ON CONFLICT). Only a plain, non-partial unique index counts.
   if not exists (
     select 1 from pg_index i
     where i.indrelid = 'public.room_members'::regclass and i.indisunique
+      and i.indpred is null and i.indexprs is null
       and (select array_agg(a.attname::text order by a.attname::text)
            from pg_attribute a
            where a.attrelid = i.indrelid and a.attnum = any (i.indkey)) = array['room_id', 'user_id']
@@ -126,6 +150,7 @@ begin
   if not exists (
     select 1 from pg_index i
     where i.indrelid = 'public.rooms'::regclass and i.indisunique
+      and i.indpred is null and i.indexprs is null
       and (select array_agg(a.attname::text)
            from pg_attribute a
            where a.attrelid = i.indrelid and a.attnum = any (i.indkey)) = array['code']
@@ -156,18 +181,12 @@ create index if not exists room_members_user_id_idx on public.room_members (user
 create index if not exists rooms_host_id_idx on public.rooms (host_id);
 
 -- ---------------------------------------------------------------------
--- 2. Data rules for NEW or CHANGED rows (old rows are left alone)
+-- 2. Data rules for NEW or CHANGED rows (NOT VALID: old rows unchecked)
 -- ---------------------------------------------------------------------
-create or replace function public.wp_is_uuid(value text)
-returns boolean
-language sql
-immutable
-set search_path = ''
-as $$
-  select value ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-$$;
-comment on function public.wp_is_uuid(text) is 'watch-party: true when text is a lowercase UUID (Supabase Auth user id)';
-
+-- Note: PostgreSQL checks these on every UPDATE of a row, so a legacy
+-- row could not be edited without also fixing it. Nothing in the app or
+-- in the functions below ever updates a legacy row (they only touch rows
+-- of rooms whose host is a real Supabase user).
 do $$
 declare
   rule record;
@@ -175,7 +194,7 @@ begin
   for rule in
     select * from (values
       ('rooms', 'rooms_host_id_is_auth_user',
-         'check (public.wp_is_uuid(host_id))'),
+         'check (host_id ~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'')'),
       ('rooms', 'rooms_code_format',
          'check (code ~ ''^[A-Z]{2,10}-[2-9A-HJKMNP-Z]{6}$'')'),
       ('rooms', 'rooms_name_length',
@@ -183,13 +202,13 @@ begin
       ('rooms', 'rooms_current_movie_id_length',
          'check (char_length(current_movie_id) between 1 and 64)'),
       ('room_members', 'room_members_user_id_is_auth_user',
-         'check (public.wp_is_uuid(user_id))'),
+         'check (user_id ~ ''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'')'),
       ('room_members', 'room_members_name_length',
          'check (char_length(btrim(name)) between 1 and 40)'),
       ('room_members', 'room_members_color_hex',
          'check (color ~ ''^#[0-9A-Fa-f]{6}$'')'),
       ('room_members', 'room_members_avatar_https',
-         'check (avatar is null or avatar = '''' or (avatar ~ ''^https://'' and char_length(avatar) <= 500))')
+         'check (avatar = '''' or (avatar ~ ''^https://'' and char_length(avatar) <= 500))')
     ) as r(tbl, name, def)
   loop
     if not exists (
@@ -225,7 +244,8 @@ end $$;
 
 -- Helper: the room ids the current user is a member of.
 -- SECURITY DEFINER lets policies use it without re-triggering the
--- room_members policy (which would otherwise loop forever).
+-- room_members policy (which would otherwise loop forever). It only ever
+-- returns the caller's own memberships.
 create or replace function public.wp_my_room_ids()
 returns setof text
 language sql
@@ -262,22 +282,62 @@ create policy "Members can update their own profile"
 -- ---------------------------------------------------------------------
 -- 4. Table privileges for browser roles
 -- ---------------------------------------------------------------------
--- anon          = not signed in at all  → no access
--- authenticated = signed in (anonymous guests included) → read, plus
---                 limited self-edits. All other writes go through the
---                 functions below.
-revoke all on table public.rooms, public.room_members from anon, authenticated;
+-- public        = every role (default grants) → nothing
+-- anon          = not signed in at all        → nothing
+-- authenticated = signed in (guests included) → read, plus limited
+--                 self-edits. All other writes go through functions.
+revoke all on table public.rooms, public.room_members from public, anon, authenticated;
 grant select on table public.rooms, public.room_members to authenticated;
 grant update (name, avatar, color, last_seen_at) on table public.room_members to authenticated;
 
 -- ---------------------------------------------------------------------
 -- 5. Server-side room operations
 -- ---------------------------------------------------------------------
--- All functions: SECURITY DEFINER (they bypass RLS, so each one checks
--- permissions itself) with an empty search_path (blocks hijacking by
--- look-alike objects; every name below is fully qualified).
+-- Public functions are SECURITY DEFINER (they bypass RLS, so each one
+-- checks permissions itself), take the caller's identity only from
+-- auth.uid() (never from a parameter), and use an empty search_path
+-- (blocks hijacking by look-alike objects; every name is qualified).
 
--- 5a. Random, hard-to-guess room code such as FILM-7K3QX9.
+-- 5a. Internal: is this text the id of an existing Supabase Auth user?
+create or replace function public.wp_is_auth_user(p_user_id text)
+returns boolean
+language plpgsql
+stable
+set search_path = ''
+as $$
+begin
+  if p_user_id is null
+     or p_user_id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+    return false;
+  end if;
+  return exists (select 1 from auth.users u where u.id = p_user_id::uuid);
+end
+$$;
+comment on function public.wp_is_auth_user(text) is 'watch-party: internal auth user existence check';
+
+-- 5b. Internal: validate the profile a user shows in a room.
+create or replace function public.wp_check_profile(p_display_name text, p_avatar text, p_color text)
+returns void
+language plpgsql
+immutable
+set search_path = ''
+as $$
+begin
+  if char_length(btrim(coalesce(p_display_name, ''))) not between 1 and 40 then
+    raise exception 'Display name must be 1–40 characters.' using errcode = '22023';
+  end if;
+  if coalesce(p_avatar, '') <> ''
+     and (p_avatar !~ '^https://' or char_length(p_avatar) > 500) then
+    raise exception 'Avatar must be an https:// image URL.' using errcode = '22023';
+  end if;
+  if coalesce(p_color, '') !~ '^#[0-9A-Fa-f]{6}$' then
+    raise exception 'Color must look like #8B5CF6.' using errcode = '22023';
+  end if;
+end
+$$;
+comment on function public.wp_check_profile(text, text, text) is 'watch-party: internal profile validation';
+
+-- 5c. Internal: random, hard-to-guess room code such as FILM-7K3QX9.
 --     31 symbols ^ 6 ≈ 887 million codes per prefix. Uses the
 --     cryptographically random gen_random_uuid() as its byte source.
 create or replace function public.wp_generate_room_code()
@@ -289,7 +349,7 @@ as $$
 declare
   prefixes constant text[] := array['FILM', 'CAMPUS', 'CINE', 'INDIE', 'NEON', 'VIBE'];
   alphabet constant text := '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
-  bytes bytea := decode(replace(pg_catalog.gen_random_uuid()::text, '-', ''), 'hex');
+  bytes bytea := decode(replace(gen_random_uuid()::text, '-', ''), 'hex');
   result text;
 begin
   -- Bytes 6 and 8 of a UUID carry fixed version/variant bits, so only
@@ -303,7 +363,7 @@ end
 $$;
 comment on function public.wp_generate_room_code() is 'watch-party: internal room code generator';
 
--- 5b. Create a room. The caller always becomes its host.
+-- 5d. Create a room. The caller always becomes its host.
 create or replace function public.create_room(
   p_name text,
   p_movie_id text,
@@ -331,14 +391,14 @@ begin
   if char_length(p_name) not between 1 and 80 then
     raise exception 'Room name must be 1–80 characters.' using errcode = '22023';
   end if;
-  if char_length(p_display_name) not between 1 and 40 then
-    raise exception 'Display name must be 1–40 characters.' using errcode = '22023';
-  end if;
   if coalesce(p_movie_id, '') = '' or char_length(p_movie_id) > 64 then
     raise exception 'Invalid movie.' using errcode = '22023';
   end if;
+  perform public.wp_check_profile(p_display_name, p_avatar, p_color);
 
-  -- Light abuse limit: at most 10 new rooms per user per hour.
+  -- Light abuse limit: at most 10 new rooms per user per hour. The
+  -- per-user lock stops parallel requests from slipping past the count.
+  perform pg_advisory_xact_lock(hashtext('watch-party:create_room:' || uid));
   if (select count(*) from public.rooms r
       where r.host_id = uid and r.created_at > now() - interval '1 hour') >= 10 then
     raise exception 'Too many rooms created recently. Please wait a while.' using errcode = '54000';
@@ -372,7 +432,7 @@ end
 $$;
 comment on function public.create_room(text, text, boolean, text, text, text) is 'watch-party: create a room; caller becomes host';
 
--- 5c. Join a room by code. Host status comes from rooms.host_id only.
+-- 5e. Join a room by code. Host status comes from rooms.host_id only.
 create or replace function public.join_room(
   p_code text,
   p_display_name text,
@@ -386,6 +446,7 @@ set search_path = ''
 as $$
 declare
   uid text := (select auth.uid())::text;
+  clean_code text := upper(btrim(coalesce(p_code, '')));
   target public.rooms;
 begin
   if uid is null then
@@ -393,16 +454,18 @@ begin
   end if;
 
   p_display_name := btrim(coalesce(p_display_name, ''));
-  if char_length(p_display_name) not between 1 and 40 then
-    raise exception 'Display name must be 1–40 characters.' using errcode = '22023';
-  end if;
+  perform public.wp_check_profile(p_display_name, p_avatar, p_color);
 
-  select * into target from public.rooms r where r.code = upper(btrim(coalesce(p_code, '')));
+  -- Lock the room row so concurrent joins are counted one at a time
+  -- (keeps the member limit exact). NO KEY UPDATE does not block the
+  -- foreign-key checks of the member insert below.
+  select * into target from public.rooms r where r.code = clean_code for no key update;
   if not found then
-    raise exception 'No room found with code "%".', upper(btrim(coalesce(p_code, ''))) using errcode = 'P0002';
+    raise exception 'No room found with code "%".', clean_code using errcode = 'P0002';
   end if;
 
-  if not public.wp_is_uuid(target.host_id) then
+  -- Legacy rooms (host is not a real Supabase user) cannot be joined.
+  if not public.wp_is_auth_user(target.host_id) then
     raise exception 'This room was created before secure accounts were added and can no longer be joined.'
       using errcode = 'P0001';
   end if;
@@ -429,7 +492,7 @@ end
 $$;
 comment on function public.join_room(text, text, text, text) is 'watch-party: join a room by code';
 
--- 5d. Leave a room. Removes only the caller. If the host leaves and
+-- 5f. Leave a room. Removes only the caller. If the host leaves and
 --     others remain, the longest-present member becomes host.
 create or replace function public.leave_room(p_code text)
 returns void
@@ -448,7 +511,7 @@ begin
 
   select * into target from public.rooms r
   where r.code = upper(btrim(coalesce(p_code, '')))
-  for update;
+  for no key update;
   if not found then
     return;
   end if;
@@ -458,7 +521,7 @@ begin
   if target.host_id = uid then
     select m.user_id into next_host
     from public.room_members m
-    where m.room_id = target.id
+    where m.room_id = target.id and public.wp_is_auth_user(m.user_id)
     order by m.created_at, m.id
     limit 1;
 
@@ -471,7 +534,8 @@ end
 $$;
 comment on function public.leave_room(text) is 'watch-party: leave a room (auto host hand-off)';
 
--- 5e. Hand host to another member. Only the current host may do this.
+-- 5g. Hand host to another member. Only the current host may do this,
+--     and only to a member who is a real, existing Supabase user.
 create or replace function public.transfer_host(p_code text, p_new_host_id text)
 returns public.rooms
 language plpgsql
@@ -488,17 +552,20 @@ begin
 
   select * into target from public.rooms r
   where r.code = upper(btrim(coalesce(p_code, '')))
-  for update;
+  for no key update;
   if not found then
     raise exception 'Room not found.' using errcode = 'P0002';
   end if;
   if target.host_id is distinct from uid then
     raise exception 'Only the current host can transfer host controls.' using errcode = '42501';
   end if;
-  if not exists (
+  if p_new_host_id is null or not exists (
     select 1 from public.room_members m where m.room_id = target.id and m.user_id = p_new_host_id
   ) then
     raise exception 'That person is not a member of this room.' using errcode = 'P0002';
+  end if;
+  if not public.wp_is_auth_user(p_new_host_id) then
+    raise exception 'That person''s guest account no longer exists.' using errcode = 'P0002';
   end if;
   if p_new_host_id = uid then
     return target;
@@ -514,7 +581,7 @@ end
 $$;
 comment on function public.transfer_host(text, text) is 'watch-party: host-only host transfer';
 
--- 5f. Change the room's current movie. Host only.
+-- 5h. Change the room's current movie. Host only.
 create or replace function public.set_room_movie(p_code text, p_movie_id text)
 returns public.rooms
 language plpgsql
@@ -534,7 +601,7 @@ begin
 
   select * into target from public.rooms r
   where r.code = upper(btrim(coalesce(p_code, '')))
-  for update;
+  for no key update;
   if not found then
     raise exception 'Room not found.' using errcode = 'P0002';
   end if;
@@ -554,20 +621,23 @@ comment on function public.set_room_movie(text, text) is 'watch-party: host-only
 -- ---------------------------------------------------------------------
 -- 6. Who may call the functions
 -- ---------------------------------------------------------------------
--- PostgreSQL lets everyone call new functions by default; lock that down.
+-- PostgreSQL (and Supabase's default privileges) let roles call new
+-- functions automatically; lock that down explicitly.
 revoke execute on function
-  public.wp_is_uuid(text),
   public.wp_my_room_ids(),
+  public.wp_is_auth_user(text),
+  public.wp_check_profile(text, text, text),
   public.wp_generate_room_code(),
   public.create_room(text, text, boolean, text, text, text),
   public.join_room(text, text, text, text),
   public.leave_room(text),
   public.transfer_host(text, text),
   public.set_room_movie(text, text)
-from public, anon;
+from public, anon, authenticated;
 
+-- Browsers (signed-in guests) may call only these. wp_my_room_ids is
+-- needed because the RLS policies call it as the signed-in user.
 grant execute on function
-  public.wp_is_uuid(text),
   public.wp_my_room_ids(),
   public.create_room(text, text, boolean, text, text, text),
   public.join_room(text, text, text, text),
@@ -575,9 +645,6 @@ grant execute on function
   public.transfer_host(text, text),
   public.set_room_movie(text, text)
 to authenticated;
-
--- wp_generate_room_code is internal only.
-revoke execute on function public.wp_generate_room_code() from authenticated;
 
 -- ---------------------------------------------------------------------
 -- 7. Realtime: make sure both tables publish change events
@@ -597,5 +664,8 @@ begin
     end if;
   end if;
 end $$;
+
+-- Ask Supabase's API layer to pick up the new functions immediately.
+notify pgrst, 'reload schema';
 
 commit;
