@@ -96,6 +96,9 @@ let roomCounter = 0;
 /** Room with host A and guests B, C (in that order), all with live leases */
 async function newRoom() {
   const c = await connect();
+  // Test setup only: age earlier test rooms so the 10-rooms-per-hour limit does not apply
+  await admin.query(`update public.rooms set created_at = now() - interval '2 hours'
+                     where host_id = $1 and created_at > now() - interval '1 hour'`, [USERS.A]);
   const room = (await asUser(c, 'A', 'select * from public.create_room($1, $2, $3, $4, $5, $6)',
     [`Room ${++roomCounter}`, 'movie-1', false, 'A', PROFILE.avatar, PROFILE.color])).rows[0];
   for (const who of ['B', 'C']) {
@@ -272,4 +275,161 @@ test('stress: mixed concurrent room actions never deadlock and keep one consiste
 
   const hostId = await hostOf(room.id);
   assert.deepEqual(await hostFlags(room.id), [hostId], 'is_host flags agree with rooms.host_id');
+});
+
+// ---------------------------------------------------------------- queue
+// Queue additions compute position = MAX(position) + 1. These tests check
+// that concurrent additions, moves and removals on separate connections
+// can never produce the same position, lose an item or exceed the cap.
+
+const video = (n) => `yt:Qvideo${String(n).padStart(5, '0')}`; // valid 11-character IDs
+const addVideoSql = 'select * from public.playlist_add_video($1, $2, $3)';
+const queueOf = async (roomId) =>
+  (await admin.query('select id, movie_id, position from public.room_playlist_items where room_id = $1 order by position, id', [roomId])).rows;
+async function assertDistinctPositions(roomId) {
+  const rows = await queueOf(roomId);
+  assert.equal(new Set(rows.map((r) => r.position)).size, rows.length, `positions are distinct: ${JSON.stringify(rows)}`);
+  return rows;
+}
+
+test('control: MAX(position) + 1 WITHOUT the room lock really does race', async () => {
+  // Proves the pattern needs protection: two transactions that do not
+  // lock the room both read the same maximum.
+  const room = await newRoom();
+  const a = await connect();
+  const b = await connect();
+  const next = 'select coalesce(max(position), 0) + 1 as p from public.room_playlist_items where room_id = $1';
+  await a.query('begin');
+  await b.query('begin');
+  const pa = (await a.query(next, [room.id])).rows[0].p;
+  const pb = (await b.query(next, [room.id])).rows[0].p;
+  assert.equal(pa, pb, 'both read the same next position');
+  await a.query('rollback');
+  await b.query('rollback');
+});
+
+test('queue: a second addition WAITS for the first and gets the next position', async () => {
+  const pairs = [
+    ['playlist_add_video', 'playlist_add_video'],
+    ['playlist_add_video', 'playlist_add'],
+    ['playlist_add', 'playlist_add_video'],
+    ['playlist_add', 'playlist_add'],
+  ];
+  for (const [first, second] of pairs) {
+    const room = await newRoom();
+    const call = (fn, n) => (fn === 'playlist_add'
+      ? ['select * from public.playlist_add($1, $2)', [room.code, `movie-${n}`]]
+      : [addVideoSql, [room.code, video(n), `Video ${n}`]]);
+    const a = await connect();
+    const b = await connect();
+    // Same host on two connections (two tabs / a double click)
+    const held = (await beginAs(a, 'A', ...call(first, 1))).rows[0];
+    const pending = asUser(b, 'A', ...call(second, 2));
+    assert.equal(await waitUntilBlocked(b), true, `${second} waits while ${first} is uncommitted`);
+    await a.query('commit');
+    const later = (await pending).rows[0];
+    assert.equal(held.position, 1);
+    assert.equal(later.position, 2, `${first} then ${second}: next position, not a duplicate`);
+  }
+});
+
+test('queue: moves and removals cannot interleave with additions', async () => {
+  const room = await newRoom();
+  const setup = await connect();
+  const reset = async () => {
+    await admin.query('delete from public.room_playlist_items where room_id = $1', [room.id]);
+    for (const n of [1, 2, 3]) await asUser(setup, 'A', addVideoSql, [room.code, video(n), `Video ${n}`]);
+    return (await queueOf(room.id)).map((r) => r.id);
+  };
+  const statements = {
+    move: (ids) => ['select public.playlist_move($1, $2, $3)', [room.code, ids[2], -1]],
+    remove: (ids) => ['select public.playlist_remove($1, $2)', [room.code, ids[0]]],
+    add: () => [addVideoSql, [room.code, video(10), 'x']],
+    add2: () => [addVideoSql, [room.code, video(11), 'y']],
+  };
+  const pairs = [['move', 'add'], ['remove', 'add'], ['add', 'move'], ['add', 'remove'], ['add', 'add2']];
+  for (const [holder, requester] of pairs) {
+    for (const outcome of ['commit', 'rollback']) {
+      const ids = await reset();
+      const a = await connect();
+      const b = await connect();
+      await beginAs(a, 'A', ...statements[holder](ids));
+      const pending = asUser(b, 'A', ...statements[requester](ids)).catch((e) => e);
+      assert.equal(await waitUntilBlocked(b), true, `${requester} waits while ${holder} is uncommitted`);
+      await a.query(outcome);
+      const result = await pending;
+      assert.ok(!(result instanceof Error), `${requester} after ${holder} (${outcome}): ${result.message}`);
+      const rows = await assertDistinctPositions(room.id);
+      const expected = 3 + [holder, requester].filter((s, i) => s.startsWith('add') && (i === 1 || outcome === 'commit')).length
+        - [holder, requester].filter((s, i) => s === 'remove' && (i === 1 || outcome === 'commit')).length;
+      assert.equal(rows.length, expected, `${holder} (${outcome}) + ${requester}: item count`);
+    }
+  }
+});
+
+test('queue: 48 concurrent calls (both add functions, moves, removals) → no duplicate positions', async () => {
+  const room = await newRoom();
+  const workers = await Promise.all(Array.from({ length: 4 }, () => connect()));
+  const failures = [];
+  await Promise.all(workers.map(async (c, w) => {
+    for (let i = 0; i < 12; i++) {
+      const n = w * 100 + i;
+      let sql;
+      let params;
+      if (i % 4 === 3) {
+        const { rows } = await admin.query('select id from public.room_playlist_items where room_id = $1 order by random() limit 1', [room.id]);
+        if (!rows.length) continue;
+        [sql, params] = w % 2
+          ? ['select public.playlist_move($1, $2, $3)', [room.code, rows[0].id, i % 8 < 4 ? -1 : 1]]
+          : ['select public.playlist_remove($1, $2)', [room.code, rows[0].id]];
+      } else if (i % 2) {
+        [sql, params] = ['select public.playlist_add($1, $2)', [room.code, `movie-${n}`]];
+      } else {
+        [sql, params] = [addVideoSql, [room.code, video(n), `Video ${n}`]];
+      }
+      try {
+        await asUser(c, 'A', sql, params);
+      } catch (e) {
+        // another worker may have removed the item first: expected
+        if (!/Queue item not found/.test(e.message)) failures.push(`${e.code} ${e.message}`);
+      }
+    }
+  }));
+  assert.deepEqual(failures, [], 'no position conflicts, deadlocks or other errors');
+  const rows = await assertDistinctPositions(room.id);
+  assert.ok(rows.length >= 30, `items kept (${rows.length})`);
+});
+
+test('queue: the 50-item cap holds under concurrent additions', async () => {
+  const room = await newRoom();
+  const setup = await connect();
+  for (let n = 0; n < 49; n++) await asUser(setup, 'A', addVideoSql, [room.code, video(n), 'v']);
+  const conns = await Promise.all(Array.from({ length: 5 }, () => connect()));
+  const results = await Promise.all(conns.map((c, i) =>
+    asUser(c, 'A', addVideoSql, [room.code, video(500 + i), 'x']).then(() => 'ok', (e) => e.message)));
+  assert.equal(results.filter((r) => r === 'ok').length, 1, 'exactly one fits');
+  assert.equal(results.filter((r) => /queue is full/.test(r)).length, 4);
+  assert.equal((await assertDistinctPositions(room.id)).length, 50);
+});
+
+test('queue: the same video added at the same moment → one copy, a clear duplicate message', async () => {
+  const room = await newRoom();
+  const conns = await Promise.all(Array.from({ length: 4 }, () => connect()));
+  const results = await Promise.all(conns.map((c) =>
+    asUser(c, 'A', addVideoSql, [room.code, video(7), 'x']).then(() => 'ok', (e) => `${e.code} ${e.message}`)));
+  assert.equal(results.filter((r) => r === 'ok').length, 1);
+  for (const r of results.filter((x) => x !== 'ok')) assert.equal(r, '23505 That video is already in the queue.');
+});
+
+test('queue: host transfer while an addition waits → the old host is refused', async () => {
+  const room = await newRoom();
+  const a = await connect();
+  const b = await connect();
+  await beginAs(a, 'A', 'select public.transfer_host($1, $2)', [room.code, USERS.B]);
+  const pending = asUser(b, 'A', addVideoSql, [room.code, video(1), 'x']).catch((e) => e);
+  assert.equal(await waitUntilBlocked(b), true, 'addition waits for the transfer');
+  await a.query('commit');
+  const result = await pending;
+  assert.match(result.message ?? 'accepted', /Only the host/);
+  assert.equal((await queueOf(room.id)).length, 0);
 });

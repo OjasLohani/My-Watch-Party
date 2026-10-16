@@ -16,6 +16,11 @@
 --     title, stored once by the host so everyone sees the same name.
 --   * playlist_add_video(code, movie_id, title): host-only, like
 --     playlist_add, plus the title (control characters removed).
+--     Concurrency: holds the room-row lock (FOR NO KEY UPDATE) like every
+--     other queue and host function, so concurrent additions, moves and
+--     removals in one room run one at a time and MAX(position) + 1 never
+--     repeats a position. "Already in the queue" is only reported for a
+--     real duplicate video.
 --
 -- Existing functions (set_playback, playlist_add, …) are unchanged; the
 -- new rules apply to them through the constraints.
@@ -115,6 +120,14 @@ declare
 begin
   target := public.wp_member_room(p_code, true); -- signed in, member, host
 
+  -- Queue lock. Every queue change (playlist_add, playlist_add_video,
+  -- playlist_move, playlist_remove) and every host change holds this
+  -- room-row lock until commit, so they run one at a time per room: the
+  -- cap, duplicate check and MAX(position) + 1 below always see the
+  -- latest committed queue. wp_member_room already took it; repeating it
+  -- here costs nothing and keeps this function safe on its own.
+  perform 1 from public.rooms r where r.id = target.id for no key update;
+
   if not public.wp_is_valid_movie_id(p_movie_id) then
     raise exception 'That is not a valid video.' using errcode = '22023';
   end if;
@@ -130,6 +143,9 @@ begin
   if (select count(*) from public.room_playlist_items p where p.room_id = target.id) >= 50 then
     raise exception 'The queue is full (50 titles).' using errcode = '54000';
   end if;
+  if exists (select 1 from public.room_playlist_items p where p.room_id = target.id and p.movie_id = p_movie_id) then
+    raise exception 'That video is already in the queue.' using errcode = '23505';
+  end if;
 
   begin
     insert into public.room_playlist_items (room_id, movie_id, position, added_by, added_by_name, title)
@@ -142,7 +158,12 @@ begin
     )
     returning * into result;
   exception when unique_violation then
-    raise exception 'That video is already in the queue.' using errcode = '23505';
+    -- Only a second copy of the same video is a duplicate; any other
+    -- unique conflict is reported as a retryable conflict, not mislabelled.
+    if exists (select 1 from public.room_playlist_items p where p.room_id = target.id and p.movie_id = p_movie_id) then
+      raise exception 'That video is already in the queue.' using errcode = '23505';
+    end if;
+    raise exception 'The queue changed at the same moment. Please try again.' using errcode = '40001';
   end;
 
   return result;
@@ -165,6 +186,12 @@ begin
   if not public.wp_is_valid_movie_id('yt:dQw4w9WgXcQ') or not public.wp_is_valid_movie_id('movie-1')
      or public.wp_is_valid_movie_id('yt:<script>') or public.wp_is_valid_movie_id('https://evil.example') then
     raise exception 'Post-flight: movie id rule is wrong';
+  end if;
+  -- playlist_add / playlist_move / playlist_remove (Stage 2) get their
+  -- queue lock from wp_member_room's host check; make sure it is there.
+  if position('for no key update' in lower((select p.prosrc from pg_proc p
+      where p.oid = to_regprocedure('public.wp_member_room(text,boolean)')))) = 0 then
+    raise exception 'Post-flight: wp_member_room no longer locks the room for host actions';
   end if;
 end $$;
 

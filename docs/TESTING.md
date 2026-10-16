@@ -4,8 +4,8 @@
 
 | Command | Count | What it covers |
 |---|---|---|
-| `npm test` | 176 (includes the 6 concurrency tests) | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, YouTube video ids and queue titles (Stage 4a), YouTube link parsing, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
-| `npm run test:concurrency` | 6 | Real PostgreSQL 17 with separate connections: lock matrix, renewal vs transfer in both orders, simultaneous transfers, deadlock stress |
+| `npm test` | 184 (includes the 13 concurrency tests) | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, YouTube video ids and queue titles (Stage 4a), YouTube link parsing, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
+| `npm run test:concurrency` | 13 | Real PostgreSQL 17 with separate connections: lock matrix, renewal vs transfer in both orders, simultaneous transfers, deadlock stress, shared-queue races (below) |
 | `npm run test:browser` | 43 | Real Chrome, real `VideoPlayer`: host play → seek → keeps playing; pause → seek stays paused; drag seeks once; reload resumes shared state; media-key pause reaches guests; host transfer during playback; reconnection catch-up; **10-person sync measurement**; leaving, display names, automatic host transfer; **YouTube** (real official player): play/pause/seek sync, late join, reconnection, host transfer, unavailable video, the Add YouTube dialog (invalid / non-embeddable / missing links, queue, play now, switching to a film and back, guests locked); production build under the Content Security Policy (incl. the YouTube player) |
 
 Browser tests use an in-page fake server (80 ms delay) instead of
@@ -36,6 +36,22 @@ started while the host is renewing waits and then sees the fresh lease
 240 mixed calls on 4 connections produce no deadlocks. Weakening the
 renewal lock to FOR KEY SHARE (which is compatible with FOR NO KEY
 UPDATE) makes three of these tests fail.
+
+### Shared queue
+
+Queue additions use position = MAX(position) + 1. On its own that races
+(a control test shows two unlocked transactions reading the same next
+position). Every queue function (`playlist_add`, `playlist_add_video`,
+`playlist_move`, `playlist_remove`) and every host change holds the
+room-row lock (FOR NO KEY UPDATE) until commit, so in one room they run
+one at a time. Tested on separate connections: a second addition waits
+and gets the next position (all four combinations of the two add
+functions); moves and removals wait for additions and the reverse
+(committed and rolled back); 48 mixed concurrent calls leave distinct
+positions; 5 simultaneous additions at 49 items → exactly one fits; the
+same video added 4 times at once → one copy, the others get "That video
+is already in the queue."; a host transfer makes a waiting addition by
+the old host fail with "Only the host".
 
 Lock order: every function that changes a room locks the room row first,
 then member / lease / playback / poll rows; none locks a child row and

@@ -81,6 +81,20 @@ test('YouTube videos in rooms', async (t) => {
     assert.deepEqual(after, ['yt:dQw4w9WgXcQ', 'movie-3', 'yt:M7lc1UVf-VE']);
   });
 
+  await t.test('other unique conflicts are not reported as "already in the queue"', async () => {
+    // Simulate an unexpected unique conflict: only one item titled "conflict" per room
+    await db.query(`create unique index stage4a_test_one_per_user on public.room_playlist_items (room_id) where title = 'conflict'`);
+    try {
+      await as(db, 'A', 'select public.playlist_add_video($1, $2, $3)', [room.code, 'yt:9bZkp7q19f0', 'conflict']);
+      const err = await errorOf(db, 'A', 'select public.playlist_add_video($1, $2, $3)', [room.code, 'yt:jNQXAC9IVRw', 'conflict']);
+      assert.match(err ?? 'accepted', /queue changed at the same moment/);
+      assert.match(await errorOf(db, 'A', 'select public.playlist_add_video($1, $2, $3)', [room.code, 'yt:9bZkp7q19f0', 'x']), /already in the queue/,
+        'a real duplicate is still reported as a duplicate');
+    } finally {
+      await db.query('drop index public.stage4a_test_one_per_user');
+    }
+  });
+
   await t.test('guests cannot add, play or change YouTube videos', async () => {
     assert.match(await errorOf(db, 'B', 'select public.playlist_add_video($1, $2, $3)', [room.code, 'yt:jNQXAC9IVRw', 'x']), /Only the host/);
     assert.match(await errorOf(db, 'B', 'select public.set_playback($1, $2, $3, $4)', [room.code, YT, true, 0]), /Only the host/);
