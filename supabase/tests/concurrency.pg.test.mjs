@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import EmbeddedPostgres from 'embedded-postgres';
 import pg from 'pg';
-import { SHIM, legacySchema, STAGE1, STAGE2, STAGE3, STAGE3B, USERS, PROFILE } from './helpers.mjs';
+import { SHIM, legacySchema, STAGE1, STAGE2, STAGE3, STAGE3B, STAGE4A, USERS, PROFILE } from './helpers.mjs';
 
 const PORT = 55433;
 let server;
@@ -37,7 +37,7 @@ before(async () => {
   await admin.query(SHIM);
   await admin.query(`set role owner_role; ${legacySchema(true)} reset role;`);
   for (const id of Object.values(USERS)) await admin.query('insert into auth.users (id) values ($1)', [id]);
-  for (const sql of [STAGE1, STAGE2, STAGE3, STAGE3B]) {
+  for (const sql of [STAGE1, STAGE2, STAGE3, STAGE3B, STAGE4A]) {
     await admin.query('set role owner_role');
     await admin.query(sql);
     await admin.query('reset role');

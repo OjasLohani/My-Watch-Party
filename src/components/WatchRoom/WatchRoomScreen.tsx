@@ -17,6 +17,7 @@ import { PollPanel } from './PollPanel';
 import { ParticipantsList } from './ParticipantsList';
 import { FloatingReactions } from './FloatingReactions';
 import { LeaveRoomDialog } from './LeaveRoomDialog';
+import { AddYouTubeDialog } from './AddYouTubeDialog';
 
 interface WatchRoomScreenProps {
   room: Room;
@@ -27,6 +28,8 @@ interface WatchRoomScreenProps {
   chatMessages: ChatMessage[];
   poll: Poll | null;
   driftMs: number;
+  /** Host: add a YouTube video to the queue or play it now (error message or null) */
+  onAddYouTube?: (video: { videoId: string; title: string }, action: 'queue' | 'play') => Promise<string | null>;
   /** Leaves the room; resolves to an error message, or null when done */
   onLeaveRoom: () => Promise<string | null>;
   onSelectMovieFromPlaylist: (item: PlaylistItem) => void;
@@ -61,6 +64,7 @@ export function WatchRoomScreen({
   poll,
   driftMs,
   onLeaveRoom,
+  onAddYouTube,
   onSelectMovieFromPlaylist,
   onRemoveFromPlaylist,
   onMovePlaylistItem,
@@ -87,6 +91,7 @@ export function WatchRoomScreen({
   const [isLeaving, setIsLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState('');
   const leavingRef = useRef(false);
+  const [isYouTubeDialogOpen, setIsYouTubeDialogOpen] = useState(false);
 
   const openLeaveDialog = () => {
     setLeaveError('');
@@ -232,6 +237,8 @@ export function WatchRoomScreen({
           {/* Cinema Frame with floating reactions */}
           <div className="relative">
             <VideoPlayer
+              // A fresh player when switching between files and YouTube videos
+              key={currentMovie.source === 'youtube' ? currentMovie.id : 'file'}
               movie={currentMovie}
               isHost={currentUser.isHost}
               room={room}
@@ -312,6 +319,7 @@ export function WatchRoomScreen({
                 onRemoveItem={onRemoveFromPlaylist}
                 onMoveItem={onMovePlaylistItem}
                 nameById={nameById}
+                onAddYouTube={onAddYouTube ? () => setIsYouTubeDialogOpen(true) : undefined}
               />
             )}
 
@@ -328,6 +336,10 @@ export function WatchRoomScreen({
           </div>
         </div>
       </div>
+
+      {isYouTubeDialogOpen && onAddYouTube && (
+        <AddYouTubeDialog onClose={() => setIsYouTubeDialogOpen(false)} onAdd={onAddYouTube} />
+      )}
 
       {isLeaveDialogOpen && (
         <LeaveRoomDialog

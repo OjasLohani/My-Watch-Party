@@ -5,6 +5,8 @@ import '../../src/index.css';
 import { VideoPlayer } from '../../src/components/WatchRoom/VideoPlayer';
 import type { PlaybackSnapshot } from '../../src/lib/playbackState';
 import { mockMovies } from '../../src/mockData';
+import { youTubeMovie } from '../../src/lib/youtube';
+import { youTubeMediaByContainer } from '../../src/lib/youtubeMedia';
 import type { Movie } from '../../src/types';
 
 // Test page: the real VideoPlayer for one host and N guests, with an
@@ -14,11 +16,13 @@ import type { Movie } from '../../src/types';
 //
 // URL options:  ?guests=9   number of guests (default 1)
 //               ?src=<url>  play another video
+//               ?yt=<id>    play a YouTube video (official player)
 //               ?player=<id>&host=<id>  "relay" mode: this page shows ONE
 //                 player; the test script is the server (it receives
 //                 window.relayPublish calls and sends states back through
 //                 window.harness.receive). Used to simulate separate people.
-// Test controls on window.harness: transferHostTo(id), setConnected(id, bool)
+// Test controls on window.harness: transferHostTo(id), setConnected(id, bool),
+// server() (the current shared state)
 const SERVER_DELAY_MS = 80;
 
 declare global {
@@ -28,8 +32,11 @@ declare global {
       transferHostTo?: (id: string) => void;
       setConnected?: (id: string, connected: boolean) => void;
       receive?: (snapshot: PlaybackSnapshot) => void;
+      server?: () => PlaybackSnapshot | null;
     };
     relayPublish?: (from: string, state: { isPlaying: boolean; position: number }) => void;
+    /** State of a player's YouTube adapter (YouTube mode only) */
+    ytState: (id: string) => { paused: boolean; time: number; seeking: boolean; readyState: number; error: number | null } | null;
   }
 }
 window.harness = { published: [] };
@@ -41,9 +48,18 @@ const players = relayPlayer
   ? [relayPlayer]
   : ['host', ...Array.from({ length: guestCount }, (_, i) => (i === 0 ? 'guest' : `guest${i + 1}`))];
 const baseMovie = mockMovies[0];
-const movie: Movie = params.get('src')
-  ? { ...baseMovie, videoUrl: params.get('src')!, fallbackVideoUrls: [] }
-  : baseMovie;
+const movie: Movie = params.get('yt')
+  ? youTubeMovie(params.get('yt')!, 'Test video')
+  : params.get('src')
+    ? { ...baseMovie, videoUrl: params.get('src')!, fallbackVideoUrls: [] }
+    : baseMovie;
+
+window.ytState = (id) => {
+  const container = document.querySelector(`#${id} iframe`)?.parentElement;
+  const media = container ? youTubeMediaByContainer.get(container) : undefined;
+  if (!media) return null;
+  return { paused: media.paused, time: media.currentTime, seeking: media.seeking, readyState: media.readyState, error: media.errorCode };
+};
 
 function Harness() {
   const [serverPlayback, setServerPlayback] = useState<PlaybackSnapshot | null>(null);
@@ -59,6 +75,7 @@ function Harness() {
 
   useEffect(() => {
     window.harness.receive = (snapshot) => setServerPlayback(snapshot);
+    window.harness.server = () => serverRef.current;
     window.harness.transferHostTo = (id) => setHostId(id);
     window.harness.setConnected = (id, connected) =>
       setFrozen((prev) => {

@@ -55,6 +55,7 @@ import {
   mapPlayback,
   measureClockOffset,
   playlistAdd as apiPlaylistAdd,
+  playlistAddVideo as apiPlaylistAddVideo,
   playlistMove as apiPlaylistMove,
   playlistRemove as apiPlaylistRemove,
   sendMessage as apiSendMessage,
@@ -64,6 +65,7 @@ import {
 import { useRoomRealtime } from './hooks/useRoomRealtime';
 import { useConnectionLease } from './hooks/useConnectionLease';
 import { useAutoHostTransfer } from './hooks/useAutoHostTransfer';
+import { fetchYouTubeInfo, resolveMovie, youTubeIdFromMovieId, youTubeMovie, youTubeMovieId } from './lib/youtube';
 import {
   mockRoom,
   mockMovies,
@@ -102,6 +104,8 @@ export default function App() {
   // Active Room & Member State
   const [activeRoom, setActiveRoom] = useState<Room>(mockRoom);
   const [currentMovie, setCurrentMovie] = useState<Movie>(mockMovies[0]);
+  // Titles of YouTube videos (by shared movie id), learned when adding or looked up
+  const [videoTitles, setVideoTitles] = useState<Record<string, string>>({});
   const [members, setMembers] = useState<User[]>([currentUser]);
   const [playlist, setPlaylist] = useState<PlaylistItem[]>(mockPlaylist);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(mockChatMessages);
@@ -288,7 +292,7 @@ export default function App() {
       );
 
       // Set active movie
-      const matchedMovie = mockMovies.find((m) => m.id === room.currentMovieId) || mockMovies[0];
+      const matchedMovie = resolveMovie(mockMovies, room.currentMovieId) || mockMovies[0];
       setCurrentMovie(matchedMovie);
       resetRoomData(room.isMockData ? 'demo' : 'real');
       setActiveRoom(room);
@@ -352,7 +356,7 @@ export default function App() {
       onRoomUpdate: (updatedRoom) => {
         setActiveRoom((prev) => ({ ...prev, ...updatedRoom }));
         if (updatedRoom.currentMovieId) {
-          const movie = mockMovies.find((m) => m.id === updatedRoom.currentMovieId);
+          const movie = resolveMovie(mockMovies, updatedRoom.currentMovieId);
           if (movie) setCurrentMovie(movie);
         }
         if (updatedRoom.hostId) {
@@ -385,9 +389,27 @@ export default function App() {
     },
   });
 
+  // Known titles: YouTube items in the queue, plus ones looked up / added
+  const knownTitles: Record<string, string> = { ...videoTitles };
+  for (const item of playlist) if (youTubeIdFromMovieId(item.movieId)) knownTitles[item.movieId] = item.title;
+
   // In real rooms the shared playback state decides which movie is on screen
-  const playbackMovie = isRealRoom && playback ? mockMovies.find((m) => m.id === playback.movieId) : undefined;
-  const displayedMovie = playbackMovie ?? currentMovie;
+  const playbackMovie = isRealRoom && playback ? resolveMovie(mockMovies, playback.movieId, knownTitles) : undefined;
+  const shownMovie = playbackMovie ?? currentMovie;
+  const displayedMovie = shownMovie.source === 'youtube' && knownTitles[shownMovie.id]
+    ? { ...shownMovie, title: knownTitles[shownMovie.id] }
+    : shownMovie;
+
+  // A YouTube video started by someone else (e.g. joined mid-video): look up its title
+  const missingTitleId = displayedMovie.source === 'youtube' && !knownTitles[displayedMovie.id] ? displayedMovie.youtubeId : undefined;
+  useEffect(() => {
+    if (!missingTitleId) return;
+    const controller = new AbortController();
+    void fetchYouTubeInfo(missingTitleId, controller.signal).then((info) => {
+      if (info.ok && info.checked) setVideoTitles((prev) => ({ ...prev, [youTubeMovieId(missingTitleId)]: info.title }));
+    });
+    return () => controller.abort();
+  }, [missingTitleId]);
 
   // Online status comes from Realtime presence in real rooms
   const displayedMembers = isRealRoom && onlineIds
@@ -716,6 +738,54 @@ export default function App() {
     addToast('You are now the host.', 'success');
   };
 
+  // --- YouTube ---
+
+  /** Host adds a YouTube video to the queue or plays it now. Error message or null. */
+  const handleAddYouTube = async (video: { videoId: string; title: string }, action: 'queue' | 'play'): Promise<string | null> => {
+    const movieId = youTubeMovieId(video.videoId);
+    const movie = youTubeMovie(video.videoId, video.title);
+    setVideoTitles((prev) => ({ ...prev, [movieId]: movie.title }));
+
+    if (isRealRoom) {
+      if (!currentUser.isHost) return 'Only the host can add videos.';
+      if (action === 'queue') {
+        const { error } = await apiPlaylistAddVideo(activeRoom.code, movieId, movie.title);
+        if (error) return error;
+        await reloadPlaylist();
+        addToast(`Added "${movie.title}" to the queue.`, 'success');
+        return null;
+      }
+      const { data, error } = await apiSetPlayback(activeRoom.code, { movieId, isPlaying: true, position: 0 });
+      if (error) return error;
+      applyPlayback(data);
+      setCurrentMovie(movie);
+      setActiveRoom((prev) => ({ ...prev, currentMovieId: movieId }));
+      addToast(`Now playing "${movie.title}".`, 'success');
+      return null;
+    }
+
+    // Demo room: local only
+    if (action === 'queue') {
+      if (playlist.some((item) => item.movieId === movieId)) return 'That video is already in the queue.';
+      setPlaylist((prev) => [...prev, {
+        id: `pl-${Date.now()}`,
+        movieId,
+        title: movie.title,
+        duration: movie.duration,
+        thumbnailUrl: movie.posterUrl,
+        videoUrl: '',
+        addedBy: currentUser.name,
+        addedById: currentUser.id,
+        genre: 'YouTube',
+      }]);
+      addToast(`Added "${movie.title}" to the queue.`, 'success');
+    } else {
+      setCurrentMovie(movie);
+      addToast(`Now playing "${movie.title}".`, 'success');
+    }
+    return null;
+  };
+
   // --- Display name ---
 
   /** Saves the name from the name dialog. Returns an error message, or null. */
@@ -917,8 +987,9 @@ export default function App() {
             poll={poll}
             driftMs={driftMs}
             onLeaveRoom={handleLeaveRoom}
+            onAddYouTube={handleAddYouTube}
             onSelectMovieFromPlaylist={(item) => {
-              const matched = mockMovies.find((m) => m.id === item.movieId);
+              const matched = resolveMovie(mockMovies, item.movieId, { [item.movieId]: item.title });
               if (matched) void handlePlayMovie(matched);
             }}
             onRemoveFromPlaylist={handleRemoveFromPlaylist}

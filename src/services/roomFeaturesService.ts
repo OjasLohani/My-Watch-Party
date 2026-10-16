@@ -3,6 +3,7 @@ import { friendlyError } from '../lib/errors';
 import { pickClockOffset } from '../lib/playbackService';
 import type { ClockSample, PlaybackSnapshot } from '../lib/playbackState';
 import type { ChatMessage, Movie, PlaylistItem, Poll } from '../types';
+import { resolveMovie, youTubeIdFromMovieId } from '../lib/youtube';
 
 // Shared room features (Stage 2). Reads use normal table queries, which
 // Row Level Security limits to rooms the user belongs to. Every write
@@ -163,13 +164,15 @@ interface DbPlaylistItem {
   position: number;
   added_by: string;
   added_by_name: string;
+  /** Stored title (YouTube videos; Stage 4a) */
+  title?: string | null;
 }
 
 export function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<PlaylistItem[]> {
   return readOr('fetchPlaylist', [] as PlaylistItem[], async () => {
   const { data, error } = await (await getSupabase())
     .from('room_playlist_items')
-    .select('id, movie_id, position, added_by, added_by_name')
+    .select('*')
     .eq('room_id', roomId)
     .order('position', { ascending: true });
   if (error) {
@@ -177,7 +180,8 @@ export function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<Playlis
     return [];
   }
   return (data as DbPlaylistItem[]).flatMap((row) => {
-    const movie = catalog.find((m) => m.id === row.movie_id);
+    const titles = row.title ? { [row.movie_id]: row.title } : undefined;
+    const movie = resolveMovie(catalog, row.movie_id, titles); // catalog movie or YouTube video
     if (!movie) return [];
     return [{
       id: String(row.id),
@@ -204,6 +208,12 @@ function simpleRpc(fn: string, args: Record<string, unknown>): Promise<Result> {
 
 export const playlistAdd = (code: string, movieId: string) =>
   simpleRpc('playlist_add', { p_code: code, p_movie_id: movieId });
+
+/** Host only: queue a YouTube video with its title (Stage 4a migration) */
+export const playlistAddVideo = (code: string, movieId: string, title: string) =>
+  youTubeIdFromMovieId(movieId)
+    ? simpleRpc('playlist_add_video', { p_code: code, p_movie_id: movieId, p_title: title })
+    : Promise.resolve({ error: 'That is not a valid YouTube video.' });
 
 export const playlistRemove = (code: string, itemId: string) =>
   simpleRpc('playlist_remove', { p_code: code, p_item_id: Number(itemId) });

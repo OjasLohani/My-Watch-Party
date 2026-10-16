@@ -16,6 +16,7 @@ anonymous Auth, Row Level Security, Realtime).
 | Display names | Guests pick a name before their first room (also from invite links); it is remembered on the device and can be changed with the ✏️ button next to your name. Each person can only change their own name. |
 | Guest accounts | Everyone is signed in automatically with Supabase **anonymous auth**: a real, private identity with no sign-up. |
 | Synchronized playback | The host's play/pause/seek/movie is stored with a server timestamp; every viewer computes the shared position and corrects drift (speed nudge for small drift, jump for large). |
+| YouTube videos | The host pastes a youtube.com, youtu.be or Shorts link (**Add YouTube Video** in the Queue tab) and can queue it or play it now. It plays in the official YouTube player, synchronized like the films. Only the video ID is stored. |
 | Late join & reconnect | New and reconnecting viewers jump straight to the shared position. |
 | Chat | Stored in Supabase, last 100 messages load on join. |
 | Reactions | Live emoji over the video (not stored). |
@@ -53,6 +54,7 @@ re-run and stops with a clear message if something is wrong):
 2. `supabase/migrations/20261017120000_stage2_shared_room_features.sql`
 3. `supabase/migrations/20261018120000_stage3_host_takeover.sql`
 4. `supabase/migrations/20261019120000_stage3b_automatic_host_transfer.sql`
+5. `supabase/migrations/20261020120000_stage4a_youtube_videos.sql`
 
 Then in the dashboard: **Authentication → Sign In / Providers → Allow
 anonymous sign-ins: ON**. More settings for production are in
@@ -68,7 +70,7 @@ anonymous sign-ins: ON**. More settings for production are in
 | `npm run lint` | ESLint |
 | `npm test` | Unit tests + database tests (local PostgreSQL 17 via PGlite) |
 | `npm run test:concurrency` | Real PostgreSQL server with separate connections: locking, races, deadlocks |
-| `npm run test:browser` | Real-Chrome tests: playback control, host transfer, reconnection, 10-person sync measurement, production security headers (needs Chrome + internet) |
+| `npm run test:browser` | Real-Chrome tests: playback control, host transfer, reconnection, 10-person sync measurement, YouTube sync and the Add YouTube dialog, production security headers (needs Chrome + internet) |
 | `npm run check:videos` | Checks that every catalog video URL is reachable |
 
 ## Project structure

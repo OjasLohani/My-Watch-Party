@@ -47,7 +47,10 @@ Changing an environment variable requires a **redeploy** (Vite bakes
   - **Content-Security-Policy**: the browser may only load scripts from
     the site itself, talk to `*.supabase.co`, play video from
     `archive.org` / `upload.wikimedia.org`, and show images from
-    `images.unsplash.com`. Verified by `npm run test:browser`
+    `images.unsplash.com`; for YouTube: the official player script from
+    `www.youtube.com`, the player frame from `www.youtube-nocookie.com` /
+    `www.youtube.com`, title checks (oEmbed) on `www.youtube.com` and
+    thumbnails from `i.ytimg.com`. Verified by `npm run test:browser`
     (`production-csp.browser.mjs`). If you add a new video or image host,
     add it to `media-src` / `img-src`, or the browser will block it.
   - `X-Frame-Options: DENY`, `nosniff`, strict referrer, HSTS, and

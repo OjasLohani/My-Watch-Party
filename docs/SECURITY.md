@@ -65,6 +65,27 @@ written by browsers, and `host_id` / `is_host` cannot be set directly.
 - Hosts on an app version without leases are never auto-transferred; the
   Stage 3 manual takeover (3 minutes without activity) remains.
 
+## YouTube videos (Stage 4a)
+
+- Links are parsed in the app; only an 11-character video ID is kept
+  (`yt:<id>`). Other hosts, `javascript:` links, embed code and anything
+  that is not a single video are refused. No URL or HTML from a user is
+  ever put into the page; the app builds the official YouTube player
+  from the ID.
+- The database checks every shared movie id (`yt:` + 11 allowed
+  characters, or a catalog id), so a modified app cannot store anything
+  else. Queue titles are plain text (control characters removed, 200
+  characters max) and shown as text by React.
+- Only the host can add, queue or play YouTube videos (`playlist_add_video`
+  and `set_playback` check the host on the server). Guests see YouTube
+  without its own controls (`controls=0`), with a click-catching layer;
+  they cannot change the shared state.
+- The player uses `youtube-nocookie.com`. Nothing is downloaded, proxied
+  or re-hosted; ads, region and age restrictions are YouTube's.
+- CSP allows only `www.youtube.com` (player script, oEmbed),
+  `www.youtube-nocookie.com` / `www.youtube.com` frames and `i.ytimg.com`
+  images, in addition to the existing hosts.
+
 ## What a heartbeat means
 
 A heartbeat proves that the host's signed-in app was open and could reach

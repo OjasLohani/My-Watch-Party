@@ -14,7 +14,8 @@ import {
 } from 'lucide-react';
 import type { Movie } from '../../types';
 import type { PlaybackSnapshot } from '../../lib/playbackState';
-import { expectedPosition, decideCorrection, compensatePublishPosition, HOST_REPUBLISH_MS } from '../../lib/playbackService';
+import { expectedPosition, decideCorrection, decideYouTubeCorrection, compensatePublishPosition, HOST_REPUBLISH_MS } from '../../lib/playbackService';
+import { YouTubeMedia, youTubeErrorMessage, type PlayableMedia } from '../../lib/youtubeMedia';
 import { RollingStats, type StatsSummary } from '../../lib/syncStats';
 
 declare global {
@@ -63,8 +64,13 @@ const FOLLOWER_CHECK_MS = 1000;
 const HOST_CHECK_MS = 5000;
 
 export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDrift, sync }: VideoPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // The media being controlled: a <video> element, or the YouTube adapter
+  // (same interface, see src/lib/youtubeMedia.ts)
+  const videoRef = useRef<PlayableMedia | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const isYouTube = movie.source === 'youtube' && Boolean(movie.youtubeId);
+  /** Empty element the YouTube adapter puts its iframe into */
+  const youTubeHostRef = useRef<HTMLDivElement>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -243,7 +249,10 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     const drift = (video.currentTime - expected) * 1000;
     driftRef.current = Math.round(drift);
     if (playback.isPlaying) syncStats.drift.add(Math.abs(drift));
-    const decision = force && Math.abs(drift) > 100 ? { kind: 'seek' as const } : decideCorrection(drift, playback.isPlaying);
+    const forceLimit = isYouTube ? 500 : 100;
+    const decision = force && Math.abs(drift) > forceLimit
+      ? { kind: 'seek' as const }
+      : isYouTube ? decideYouTubeCorrection(drift, playback.isPlaying) : decideCorrection(drift, playback.isPlaying);
     if (decision.kind === 'seek') {
       video.currentTime = expected;
       video.playbackRate = 1;
@@ -252,7 +261,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     } else if (video.playbackRate !== 1) {
       video.playbackRate = 1;
     }
-  }, [playback, movie.id, clockOffsetMs, syncStats]);
+  }, [playback, movie.id, clockOffsetMs, syncStats, isYouTube]);
 
   // Viewers: measure how long each host change took to arrive here
   useEffect(() => {
@@ -328,10 +337,11 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     return () => clearInterval(timer);
   }, [isSynced, syncStats]);
 
-  // Reload the video element when the movie changes
+  // Reload the video element when the movie changes (YouTube players are
+  // re-created per video instead; see the YouTube effect below)
   useEffect(() => {
-    videoRef.current?.load();
-  }, [movie.id]);
+    if (!isYouTube) videoRef.current?.load();
+  }, [movie.id, isYouTube]);
 
   // --- Playback Controls ---
 
@@ -537,6 +547,12 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   const handleVideoError = () => {
     const video = videoRef.current;
     const code = video?.error?.code;
+    if (isYouTube) {
+      // No backup sources for YouTube: explain what YouTube reported
+      setFailure({ movieId: movie.id, reason: youTubeErrorMessage(code ?? -1) });
+      setIsPlaying(false);
+      return;
+    }
     if (code === MediaError.MEDIA_ERR_ABORTED) return; // load was cancelled on purpose
 
     if (video && video.currentTime > 0) resumeAtRef.current = video.currentTime;
@@ -650,6 +666,43 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     }
   };
 
+  // --- YouTube: create the adapter and route its events to the same
+  // handlers the <video> element uses ---
+  const mediaHandlersRef = useRef<Record<string, () => void>>({});
+  useEffect(() => {
+    mediaHandlersRef.current = {
+      timeupdate: handleTimeUpdate,
+      play: handlePlay,
+      playing: handlePlaying,
+      pause: handlePause,
+      waiting: handleWaiting,
+      canplay: handleCanPlay,
+      seeked: handleSeeked,
+      emptied: handleEmptied,
+      loadedmetadata: handleLoadedMetadata,
+      durationchange: () => setDuration(videoRef.current?.duration || 0),
+      ended: handleEnded,
+      error: handleVideoError,
+    };
+  });
+  const youtubeId = isYouTube ? movie.youtubeId! : null;
+  useEffect(() => {
+    const host = youTubeHostRef.current;
+    if (!youtubeId || !host) return;
+    const media = new YouTubeMedia(host, youtubeId);
+    videoRef.current = media;
+    const listeners = Object.keys(mediaHandlersRef.current).map((type) => {
+      const listener = () => mediaHandlersRef.current[type]?.();
+      media.addEventListener(type, listener);
+      return [type, listener] as const;
+    });
+    return () => {
+      for (const [type, listener] of listeners) media.removeEventListener(type, listener);
+      media.destroy();
+      if (videoRef.current === media) videoRef.current = null;
+    };
+  }, [youtubeId]);
+
   const controlsLocked = isSynced && !isHost;
   // Host / demo buttons show what was asked for; guests show what plays
   const showAsPlaying = controlsAreLocal ? wantsPlaying : isPlaying;
@@ -666,9 +719,22 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
       onMouseLeave={() => setShowControls(false)}
       className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.12] bg-black cinema-ambient-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
     >
-      {/* Video Element */}
+      {/* Video Element (file) or YouTube player */}
+      {isYouTube ? (
+        <>
+          <div ref={youTubeHostRef} className="h-full w-full bg-black [&>iframe]:h-full [&>iframe]:w-full" />
+          {/* Clicks go to the app's controls, not into YouTube's player */}
+          <div
+            className="absolute inset-0 z-[5] cursor-pointer"
+            onClick={togglePlay}
+            aria-hidden="true"
+          />
+        </>
+      ) : (
       <video
-        ref={videoRef}
+        ref={(el) => {
+          if (!isYouTube) videoRef.current = el;
+        }}
         src={sources[sourceIndex]}
         poster={movie.backdropUrl}
         preload="auto"
@@ -688,6 +754,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
         className="h-full w-full object-contain bg-black cursor-pointer"
         onClick={togglePlay}
       />
+      )}
 
       {/* Fallback Display if video cannot load in preview */}
       {hasError && (
@@ -696,8 +763,10 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
           <h4 className="mt-2 text-sm font-bold text-white">Video unavailable</h4>
           <p className="mt-1 max-w-sm text-xs text-slate-400">
             “{movie.title}” could not be loaded — {failure?.reason}
-            {sources.length > 1 ? ` (tried ${sources.length} sources)` : ''}.
-            Check your internet connection and try again
+            {!isYouTube && sources.length > 1 ? ` (tried ${sources.length} sources)` : ''}.
+            {isYouTube && failure?.reason && !/connection|blocker/.test(failure.reason)
+              ? 'The host can choose another video'
+              : 'Check your internet connection and try again'}
             {isSynced ? '. Chat, reactions and polls keep working meanwhile.' : '.'}
           </p>
           <button

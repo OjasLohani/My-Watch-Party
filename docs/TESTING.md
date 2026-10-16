@@ -4,9 +4,9 @@
 
 | Command | Count | What it covers |
 |---|---|---|
-| `npm test` | 138 (includes the 6 concurrency tests) | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
+| `npm test` | 176 (includes the 6 concurrency tests) | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, YouTube video ids and queue titles (Stage 4a), YouTube link parsing, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
 | `npm run test:concurrency` | 6 | Real PostgreSQL 17 with separate connections: lock matrix, renewal vs transfer in both orders, simultaneous transfers, deadlock stress |
-| `npm run test:browser` | 10 | Real Chrome, real `VideoPlayer`: host play → seek → keeps playing; pause → seek stays paused; drag seeks once; reload resumes shared state; media-key pause reaches guests; host transfer during playback; reconnection catch-up; **10-person sync measurement**; production build under the Content Security Policy |
+| `npm run test:browser` | 43 | Real Chrome, real `VideoPlayer`: host play → seek → keeps playing; pause → seek stays paused; drag seeks once; reload resumes shared state; media-key pause reaches guests; host transfer during playback; reconnection catch-up; **10-person sync measurement**; leaving, display names, automatic host transfer; **YouTube** (real official player): play/pause/seek sync, late join, reconnection, host transfer, unavailable video, the Add YouTube dialog (invalid / non-embeddable / missing links, queue, play now, switching to a film and back, guests locked); production build under the Content Security Policy (incl. the YouTube player) |
 
 Browser tests use an in-page fake server (80 ms delay) instead of
 Supabase, and a throwaway Chrome profile. Nothing touches your Supabase
@@ -137,6 +137,8 @@ video.
 | Viewer buffering | Drift correction pauses while buffering, then resumes |
 | Host buffering | When the host's video resumes, the host re-sends its real position |
 | Video source fails | Player switches to the backup copy at the same position; if all fail, "Video unavailable" with Try Again |
+| YouTube video not embeddable / removed / private | Refused when the host checks the link; if it still fails in the player: "Video unavailable — the owner of this video does not allow it…" and "The host can choose another video" |
+| YouTube drift | Corrected by jumping (YouTube has fixed speeds): more than 1 s while playing, 0.5 s while paused. Measured in the browser test: host–guest gap a few ms on one PC |
 | Autoplay blocked | Viewer sees "The host is playing — click to join" |
 | Host disconnects (closed tab, crash, lost connection) | Hosting passes automatically to the longest-present connected guest after the host's 12 s lease expires: measured **12.7–13.0 s** (end-to-end test). Refresh and tab switching keep hosting. |
 | Host on an older app version disconnects | Presence shows them offline; after 1 minute guests see a banner; after 3 minutes without any host activity (heartbeat, joining, becoming host, playback command, chat), any member can **take over hosting**. A host who just joined or just received the role is protected for 3 minutes |

@@ -71,6 +71,23 @@ export function pickClockOffset(samples: ClockSample[]): { offsetMs: number; rtt
   return best;
 }
 
+/** YouTube viewers are moved (seek) only beyond this drift */
+export const YOUTUBE_SEEK_MS = 1000;
+/** While paused, YouTube viewers further than this from the host are moved */
+export const YOUTUBE_PAUSED_SEEK_MS = 500;
+
+/**
+ * Drift correction for the YouTube player. YouTube only supports a few
+ * fixed speeds (0.25×, 0.5× … 2×), so the gentle ±20 % speed nudging used
+ * for video files is not possible; small drift is left alone and larger
+ * drift is fixed with a seek (YouTube seeks are slower, so the threshold
+ * is higher to avoid constant re-buffering).
+ */
+export function decideYouTubeCorrection(driftMs: number, isPlaying: boolean): CorrectionDecision {
+  const limit = isPlaying ? YOUTUBE_SEEK_MS : YOUTUBE_PAUSED_SEEK_MS;
+  return Math.abs(driftMs) > limit ? { kind: 'seek' } : { kind: 'none' };
+}
+
 /** Largest one-way delay we compensate for (anything above is likely an outlier) */
 export const MAX_PUBLISH_LEAD_MS = 1000;
 

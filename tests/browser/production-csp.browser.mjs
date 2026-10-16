@@ -1,7 +1,8 @@
 // Production check: builds the app, serves it with the exact headers from
 // vercel.json, and confirms in Chrome that the Content Security Policy
 // does not block anything the app needs (scripts, styles, images, the
-// lazily loaded chunks, the realtime worker, Supabase and video hosts).
+// lazily loaded chunks, the realtime worker, Supabase, video hosts and the
+// official YouTube player).
 //
 // The build uses a fake Supabase project URL, so nothing is sent to (or
 // created in) your real Supabase project.
@@ -105,6 +106,42 @@ test('production build works under the Content Security Policy', async () => {
     });
     results.archive = await loadVideo('https://archive.org/download/ElephantsDream/ed_1024_512kb.mp4');
     results.wikimedia = await loadVideo('https://upload.wikimedia.org/wikipedia/commons/transcoded/c/c0/Big_Buck_Bunny_4K.webm/Big_Buck_Bunny_4K.webm.480p.vp9.webm');
+    // YouTube: official IFrame API script, the player iframe, oEmbed, thumbnails
+    results.youtubeApi = await new Promise((resolve) => {
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      window.onYouTubeIframeAPIReady = () => resolve('ok');
+      script.onerror = () => resolve('blocked');
+      setTimeout(() => resolve('timeout'), 20000);
+      document.head.append(script);
+    });
+    if (results.youtubeApi === 'ok') {
+      results.youtubePlayer = await new Promise((resolve) => {
+        const mount = document.createElement('div');
+        document.body.append(mount);
+        new window.YT.Player(mount, {
+          host: 'https://www.youtube-nocookie.com',
+          videoId: 'aqz-KE-bpKQ',
+          playerVars: { controls: 0, origin: location.origin },
+          events: { onReady: () => resolve('ok'), onError: (e) => resolve(`error ${e.data}`) },
+        });
+        setTimeout(() => resolve('timeout'), 20000);
+      });
+    }
+    try {
+      const res = await fetch('https://www.youtube.com/oembed?format=json&url=' +
+        encodeURIComponent('https://www.youtube.com/watch?v=aqz-KE-bpKQ'));
+      results.oembed = res.ok ? 'ok' : `status ${res.status}`;
+    } catch (e) {
+      results.oembed = `error: ${e.message}`;
+    }
+    results.thumbnail = await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve('ok');
+      img.onerror = () => resolve('error');
+      setTimeout(() => resolve('timeout'), 15000);
+      img.src = 'https://i.ytimg.com/vi/aqz-KE-bpKQ/hqdefault.jpg';
+    });
     // Supabase: the request must be ALLOWED by CSP (the fake host then fails DNS)
     try {
       await fetch(`${supabaseUrl}/rest/v1/`, { mode: 'cors' });
@@ -132,6 +169,10 @@ test('production build works under the Content Security Policy', async () => {
   assert.equal(checks.worker, 'ok', 'realtime worker allowed');
   assert.equal(checks.archive, 'ok', 'archive.org video allowed');
   assert.equal(checks.wikimedia, 'ok', 'Wikimedia video allowed');
+  assert.equal(checks.youtubeApi, 'ok', 'YouTube IFrame API script allowed');
+  assert.equal(checks.youtubePlayer, 'ok', 'YouTube player iframe allowed');
+  assert.equal(checks.oembed, 'ok', 'YouTube oEmbed (title check) allowed');
+  assert.equal(checks.thumbnail, 'ok', 'YouTube thumbnails allowed');
   assert.notEqual(checks.supabase, undefined);
   assert.equal(blocked, true, 'other hosts are blocked by the policy');
   assert.deepEqual(pageErrors.filter((m) => !/Failed to fetch|NetworkError|sign in|csp-check/i.test(m)), []);

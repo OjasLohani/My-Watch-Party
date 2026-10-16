@@ -22,6 +22,10 @@ export interface Movie {
   fallbackVideoUrls?: string[];
   /** Attribution required by the video's licence */
   videoCredit?: string;
+  /** Where the video comes from (default: a video file) */
+  source?: 'file' | 'youtube';
+  /** YouTube video ID when source is youtube */
+  youtubeId?: string;
   genre: string;
   category: string; // e.g., 'Sci-Fi', 'Animation', 'Documentary', 'Cyberpunk', 'Classics'
   year: number;

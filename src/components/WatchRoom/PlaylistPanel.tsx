@@ -1,4 +1,4 @@
-import { Play, Plus, Clock, Film, ChevronUp, ChevronDown, X } from 'lucide-react';
+import { Play, Plus, Clock, Film, ChevronUp, ChevronDown, X, MonitorPlay } from 'lucide-react';
 import type { PlaylistItem } from '../../types';
 
 interface PlaylistPanelProps {
@@ -13,6 +13,8 @@ interface PlaylistPanelProps {
   onMoveItem?: (item: PlaylistItem, direction: -1 | 1) => void;
   /** Current display names by user id */
   nameById?: Map<string, string>;
+  /** Host only: open the "Add YouTube Video" dialog */
+  onAddYouTube?: () => void;
 }
 
 export function PlaylistPanel({
@@ -24,6 +26,7 @@ export function PlaylistPanel({
   onRemoveItem,
   onMoveItem,
   nameById,
+  onAddYouTube,
 }: PlaylistPanelProps) {
   return (
     <div className="flex h-full flex-col bg-[#0A0C13] p-4">
@@ -39,6 +42,17 @@ export function PlaylistPanel({
           </p>
         </div>
 
+        <div className="flex items-center gap-1.5">
+        {isHost && onAddYouTube && (
+          <button
+            type="button"
+            onClick={onAddYouTube}
+            className="flex items-center gap-1 rounded-lg border border-violet-500/30 bg-violet-950/20 px-2.5 py-1 text-[11px] font-semibold text-violet-200 hover:bg-violet-900/30 transition-colors"
+          >
+            <MonitorPlay className="h-3 w-3" />
+            YouTube
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpenDiscover}
@@ -47,6 +61,7 @@ export function PlaylistPanel({
           <Plus className="h-3 w-3" />
           Queue Film
         </button>
+        </div>
       </div>
 
       {playlist.length === 0 && (
