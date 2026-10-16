@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Play, 
   Pause, 
@@ -9,7 +9,7 @@ import {
   RotateCcw, 
   Shield, 
   AlertCircle,
-  Sync 
+  RefreshCw
 } from 'lucide-react';
 import type { Movie } from '../../types';
 import { createPlaybackService, usePlaybackRealtime } from '../../lib/playbackService';
@@ -318,7 +318,7 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
               <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
             </span>
             <span>{driftMs}ms Drift</span>
-            <Sync className="h-3 w-3 text-emerald-400 ml-1" />
+            <RefreshCw className="h-3 w-3 text-emerald-400 ml-1" />
           </button>
         </div>
       </div>
