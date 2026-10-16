@@ -41,7 +41,7 @@ export const PROFILE = { avatar: 'https://images.unsplash.com/x.jpg', color: '#8
 // Supabase-like environment. "owner_role" plays Supabase's `postgres`
 // role: not a superuser, but BYPASSRLS, owns the app tables, can read
 // auth.users. Migrations are executed as this role.
-const SHIM = `
+export const SHIM = `
   create role anon nologin;
   create role authenticated nologin;
   create role service_role nologin bypassrls;
@@ -86,7 +86,7 @@ const SHIM = `
 // The pre-Stage-1 schema as found by the inspection: TEXT user ids,
 // RLS on with open USING (true) policies, both tables in realtime,
 // and legacy rows with made-up "usr_..." ids.
-function legacySchema(withKeys) {
+export function legacySchema(withKeys) {
   return `
   create table public.rooms (
     id uuid primary key default gen_random_uuid(),

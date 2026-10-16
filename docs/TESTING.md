@@ -4,12 +4,42 @@
 
 | Command | Count | What it covers |
 |---|---|---|
-| `npm test` | 108 | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
+| `npm test` | 138 (includes the 6 concurrency tests) | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
+| `npm run test:concurrency` | 6 | Real PostgreSQL 17 with separate connections: lock matrix, renewal vs transfer in both orders, simultaneous transfers, deadlock stress |
 | `npm run test:browser` | 10 | Real Chrome, real `VideoPlayer`: host play → seek → keeps playing; pause → seek stays paused; drag seeks once; reload resumes shared state; media-key pause reaches guests; host transfer during playback; reconnection catch-up; **10-person sync measurement**; production build under the Content Security Policy |
 
 Browser tests use an in-page fake server (80 ms delay) instead of
 Supabase, and a throwaway Chrome profile. Nothing touches your Supabase
 project.
+
+## Concurrency on a real PostgreSQL server
+
+`npm run test:concurrency` starts a real PostgreSQL 17 (embedded-postgres,
+UTF-8 like Supabase), applies every migration, and uses **separate
+connections**, so locks and waits behave as on Supabase.
+
+Lock matrix measured between the room functions (row: transaction holding
+the lock, column: requested by another member):
+
+| held  requested | renew | auto_transfer | claim | transfer | leave |
+|---|---|---|---|---|---|
+| renew (FOR SHARE) | runs | waits | waits | waits | waits |
+| auto_transfer (FOR NO KEY UPDATE) | waits | waits | waits | waits | waits |
+| claim | waits | waits | waits | waits | waits |
+| transfer | waits | waits | waits | waits | waits |
+| leave | waits | waits | waits | waits | waits |
+
+Renewals from different members run side by side; every host change is
+serialized with renewals and with each other. Also tested: a transfer
+started while the host is renewing waits and then sees the fresh lease
+(host keeps hosting); 8 simultaneous transfer requests produce one host;
+240 mixed calls on 4 connections produce no deadlocks. Weakening the
+renewal lock to FOR KEY SHARE (which is compatible with FOR NO KEY
+UPDATE) makes three of these tests fail.
+
+Lock order: every function that changes a room locks the room row first,
+then member / lease / playback / poll rows; none locks a child row and
+then waits for the room row.
 
 ## Automatic host transfer (end-to-end)
 

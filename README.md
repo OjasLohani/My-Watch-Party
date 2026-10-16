@@ -65,6 +65,7 @@ anonymous sign-ins: ON**. More settings for production are in
 | `npm run preview` | Serve the built site locally |
 | `npm run lint` | ESLint |
 | `npm test` | Unit tests + database tests (local PostgreSQL 17 via PGlite) |
+| `npm run test:concurrency` | Real PostgreSQL server with separate connections: locking, races, deadlocks |
 | `npm run test:browser` | Real-Chrome tests: playback control, host transfer, reconnection, 10-person sync measurement, production security headers (needs Chrome + internet) |
 | `npm run check:videos` | Checks that every catalog video URL is reachable |
 
