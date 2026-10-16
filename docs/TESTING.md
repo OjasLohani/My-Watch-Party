@@ -1,0 +1,90 @@
+# Testing, measurements and failure handling
+
+## Automated tests
+
+| Command | Count | What it covers |
+|---|---|---|
+| `npm test` | 88 | Sync math (expected position, drift decisions, clock offset, delay compensation, statistics); video catalog; **database tests** that run every migration on a local PostgreSQL 17 (PGlite) with a Supabase-like setup: legacy data preserved, RLS, function permissions, host-only rules, Realtime channel isolation, locking against races, queue/poll edge cases, host takeover, rollbacks, and that frontend calls match SQL signatures |
+| `npm run test:browser` | 10 | Real Chrome, real `VideoPlayer`: host play → seek → keeps playing; pause → seek stays paused; drag seeks once; reload resumes shared state; media-key pause reaches guests; host transfer during playback; reconnection catch-up; **10-person sync measurement**; production build under the Content Security Policy |
+
+Browser tests use an in-page fake server (80 ms delay) instead of
+Supabase, and a throwaway Chrome profile. Nothing touches your Supabase
+project.
+
+## Synchronization measurements
+
+Targets from the assignment: ≥ 10 users per room, host command delivery
+≤ 250 ms p95 on a local network, drift ≤ 500 ms after correction.
+
+### Test conditions
+
+- 1 host + 9 guests, each in an **isolated Chrome browser context** (own
+  connections, like separate people), headless Chrome on one Windows PC.
+- Video: first ~3 minutes of *Elephants Dream* (H.264), served locally,
+  because ten streams from one PC saturate its connection to archive.org
+  (ten real viewers each have their own connection).
+- Fake server: stamps and versions each host change, delivers it to all
+  ten pages after **80 ms**.
+- Drift: every 500 ms for 20 s, each guest's position vs the host's,
+  projected to the same instant (360 samples).
+- Command latency: host click → guest's `<video>` fires `pause` /
+  `playing` (18 samples).
+
+### Results (16–17 Oct 2026)
+
+| Metric | Before the delay compensation | After |
+|---|---|---|
+| Drift p50 | 91–183 ms | **22–46 ms** |
+| Drift p95 | 228–419 ms | **34–66 ms** |
+| Drift max | 472–1714 ms | 39–369 ms |
+| Command latency p95 (incl. 80 ms simulated server) | 322–784 ms | **229–277 ms** |
+
+Before: the server stamps a change when it **arrives**, so every viewer
+trailed the host by the one-way delay. After: the host adds the measured
+one-way delay (half the round trip) to the position it publishes.
+
+**What these numbers do not include:** the real network path
+host → Supabase → viewer. That depends on everyone's connection and the
+Supabase region, so it is measured live in the app instead (below).
+The 250 ms p95 target therefore still has to be confirmed on your network.
+
+Reliability of the measurement itself: 2 of 8 ten-person runs failed,
+both before the compensation change. One measured a drift p95 of 3.3 s.
+For the other, the failure detail was not captured. Both happened while
+ten video decoders were running on one PC, and the next five runs passed.
+Treat the 10-person browser test as a measurement that can occasionally
+fail on a busy machine, and simply run it again.
+
+### Measuring on a real network
+
+In a **guest's** tab, open the browser console (F12) after a few host
+actions and type:
+
+```js
+window.watchPartySync
+// { latencyMs: { count, p50, p95, max }, driftMs: { count, p50, p95, max } }
+```
+
+- `latencyMs`: server timestamp of each host change → arrival in this
+  browser (uses the measured clock offset).
+- `driftMs`: this viewer vs the shared timeline, sampled every second
+  while playing.
+
+The same numbers appear in the tooltip of the green drift badge on the
+video.
+
+## Failure handling
+
+| Situation | What happens |
+|---|---|
+| Slow / dropped requests | Every Supabase request times out after 15 s; reads fall back to the last data, writes show a readable message ("Network problem…") |
+| Supabase library fails to download | Retried on the next action |
+| Realtime connection drops | supabase-js retries; if not recovered in 15 s, or the server closed the channel (e.g. expired session), the app rebuilds it with back-off (2 s → 30 s) and shows "Reconnecting…" |
+| Tab in background | Heartbeats run in a Web Worker; on return / when back online the room reloads everything (at most every 5 s) |
+| Missed updates | Every reconnect reloads playback, chat, queue, poll and members; newer playback versions always win, stale ones are ignored |
+| Viewer buffering | Drift correction pauses while buffering, then resumes |
+| Host buffering | When the host's video resumes, the host re-sends its real position |
+| Video source fails | Player switches to the backup copy at the same position; if all fail, "Video unavailable" with Try Again |
+| Autoplay blocked | Viewer sees "The host is playing — click to join" |
+| Host closes laptop / disconnects | Presence shows them offline; after 1 minute guests see a banner; after 3 minutes without a server heartbeat, any member can **take over hosting** |
+| Two actions at once | Database row locks: votes vs poll closing, host transfer vs takeover, member limit, chat rate limit |
