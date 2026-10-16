@@ -35,8 +35,11 @@ import {
   getRoomMembers as apiGetRoomMembers,
   leaveRoom as apiLeaveRoom,
   transferRoomHost as apiTransferRoomHost,
-  touchRoom as apiTouchRoom,
-  claimHost as apiClaimHost
+  claimHost as apiClaimHost,
+  renewConnectionLease as apiRenewConnectionLease,
+  renewConnectionLeaseOnExit as apiRenewConnectionLeaseOnExit,
+  autoTransferHost as apiAutoTransferHost,
+  fetchRoom as apiFetchRoom
 } from './services/roomService';
 import {
   closePoll as apiClosePoll,
@@ -56,6 +59,8 @@ import {
   votePoll as apiVotePoll,
 } from './services/roomFeaturesService';
 import { useRoomRealtime } from './hooks/useRoomRealtime';
+import { useConnectionLease } from './hooks/useConnectionLease';
+import { useAutoHostTransfer } from './hooks/useAutoHostTransfer';
 import {
   mockRoom,
   mockMovies,
@@ -79,10 +84,10 @@ import type {
 const REACTION_COOLDOWN_MS = 250;
 /** How long a server clock offset measurement is reused */
 const CLOCK_REMEASURE_MS = 120_000;
-/** "Still here" signal interval (the server allows a takeover after 3 min of silence) */
-const HEARTBEAT_MS = 30_000;
-/** Guests are offered to take over once the host has been offline this long */
-const HOST_AWAY_MS = 60_000;
+/** Host missing from Presence this long: show the "disconnected" notice */
+const HOST_NOTICE_MS = 5_000;
+/** Fallback: offer the manual takeover (Stage 3 rule) after this long */
+const HOST_MANUAL_TAKEOVER_MS = 60_000;
 
 export default function App() {
   // Navigation View State
@@ -195,13 +200,22 @@ export default function App() {
     }
   };
 
+  /** Applies a host change confirmed by the server (realtime, RPC result or resync) */
+  const applyHostChange = useCallback((hostId: string) => {
+    setActiveRoom((prev) => (prev.hostId === hostId ? prev : { ...prev, hostId }));
+    setCurrentUser((prev) => (prev.isHost === (prev.id === hostId) ? prev : { ...prev, isHost: prev.id === hostId }));
+    setMembers((prev) => prev.map((m) => ({ ...m, isHost: m.id === hostId })));
+    setHostSeenAt(Date.now());
+  }, []);
+
   /** Loads everything for the current real room (join, reconnect, tab refocus) */
   const resyncRoom = useCallback(async () => {
     if (activeRoom.isMockData) return;
     const roomId = activeRoom.id;
     const userId = currentUser.id;
 
-    const [roomMembers, snapshot, messages, items, activePoll] = await Promise.all([
+    const [roomRow, roomMembers, snapshot, messages, items, activePoll] = await Promise.all([
+      apiFetchRoom(roomId),
       apiGetRoomMembers(roomId, userId),
       fetchPlayback(roomId),
       fetchMessages(roomId),
@@ -211,6 +225,9 @@ export default function App() {
     if (activeRoomIdRef.current !== roomId) return; // left the room meanwhile
 
     if (roomMembers.length > 0) setMembers(roomMembers);
+    // Host may have changed while we were away (e.g. we were the host and
+    // hosting passed to someone else while disconnected)
+    if (roomRow) applyHostChange(roomRow.hostId);
     applyPlayback(snapshot);
     setChatMessages(messages);
     setPlaylist(items);
@@ -226,7 +243,7 @@ export default function App() {
       setClockOffsetMs(clock.offsetMs);
       setServerDelayMs(clock.rttMs / 2);
     }
-  }, [activeRoom.id, activeRoom.isMockData, currentUser.id, applyPlayback]);
+  }, [activeRoom.id, activeRoom.isMockData, currentUser.id, applyPlayback, applyHostChange]);
 
   // Join Room by Code (Used by modal and invite URLs).
   // Returns an error message, or null on success.
@@ -632,44 +649,52 @@ export default function App() {
     return null;
   };
 
-  // --- Absent host ---
+  // --- Automatic host transfer (server-side connection leases) ---
 
-  // Members tell the server "still here" so an absent host can be detected
+  // Keep this member's lease alive; if the host's lease expires (closed
+  // tab, crash, lost connection) the server hands hosting over.
+  useConnectionLease(isRealRoom ? activeRoom.code : null, {
+    renew: apiRenewConnectionLease,
+    renewOnExit: apiRenewConnectionLeaseOnExit,
+  });
+
+  // Guests ask the server whether hosting should move (the server checks
+  // the host's lease and picks the successor; Presence only sets the pace)
+  useAutoHostTransfer({
+    enabled: isRealRoom,
+    roomId: activeRoom.id,
+    roomCode: activeRoom.code,
+    hostId: activeRoom.hostId,
+    myId: currentUser.id,
+    isHost: currentUser.isHost,
+    members,
+    onlineIds,
+    ask: apiAutoTransferHost,
+    onHostChange: applyHostChange,
+  });
+
   useEffect(() => {
     if (!isRealRoom) return;
-    const code = activeRoom.code;
-    const beat = () => {
-      void apiTouchRoom(code);
-    };
-    beat();
-    const timer = setInterval(beat, HEARTBEAT_MS);
-    return () => clearInterval(timer);
-  }, [isRealRoom, activeRoom.code]);
-
-  useEffect(() => {
-    if (!isRealRoom) return;
-    const timer = setInterval(() => setPresenceTick(Date.now()), 15_000);
+    const timer = setInterval(() => setPresenceTick(Date.now()), 3_000);
     return () => clearInterval(timer);
   }, [isRealRoom]);
 
-  const hostIsAway =
-    isRealRoom &&
-    !currentUser.isHost &&
-    realtimeStatus === 'live' &&
-    onlineIds !== null &&
-    !onlineIds.has(activeRoom.hostId) &&
-    presenceTick - hostSeenAt > HOST_AWAY_MS;
+  const hostMissingFor =
+    isRealRoom && !currentUser.isHost && realtimeStatus === 'live' && onlineIds !== null && !onlineIds.has(activeRoom.hostId)
+      ? presenceTick - hostSeenAt
+      : 0;
+  const hostIsAway = hostMissingFor > HOST_NOTICE_MS;
+  const canClaimManually = hostMissingFor > HOST_MANUAL_TAKEOVER_MS;
   const hostName = members.find((m) => m.id === activeRoom.hostId)?.name ?? 'The host';
 
+  /** Fallback for hosts on older app versions (Stage 3: 3 minutes without activity) */
   const handleClaimHost = async () => {
     const { error } = await apiClaimHost(activeRoom.code);
     if (error) {
       addToast(error, 'warning');
       return;
     }
-    setActiveRoom((prev) => ({ ...prev, hostId: currentUser.id }));
-    setCurrentUser((prev) => ({ ...prev, isHost: true }));
-    setMembers((prev) => prev.map((m) => ({ ...m, isHost: m.id === currentUser.id })));
+    applyHostChange(currentUser.id);
     addToast('You are now the host.', 'success');
   };
 
@@ -859,7 +884,7 @@ export default function App() {
               onHostChange: (state) => void handleHostPlaybackChange(state),
             } : undefined}
             connectionStatus={realtimeStatus}
-            hostAway={hostIsAway ? { hostName } : null}
+            hostAway={hostIsAway ? { hostName, canClaim: canClaimManually } : null}
             onClaimHost={() => void handleClaimHost()}
           />
           </Suspense>

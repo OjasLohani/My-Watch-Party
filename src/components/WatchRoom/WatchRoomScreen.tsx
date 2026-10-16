@@ -41,8 +41,8 @@ interface WatchRoomScreenProps {
   /** Shared playback wiring (real rooms only) */
   playbackSync?: PlaybackSyncProps;
   connectionStatus: RealtimeStatus;
-  /** Set when the host has been offline for a while (guests only) */
-  hostAway?: { hostName: string } | null;
+  /** Set when the host has disconnected (guests only); canClaim = manual fallback */
+  hostAway?: { hostName: string; canClaim: boolean } | null;
   onClaimHost?: () => void;
 }
 
@@ -170,10 +170,10 @@ export function WatchRoomScreen({
           className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-200"
         >
           <span>
-            <strong className="font-semibold">{hostAway.hostName}</strong> (host) seems to be offline, so nobody can control
-            playback. If they do not come back, someone can take over.
+            <strong className="font-semibold">{hostAway.hostName}</strong> (host) disconnected. If they do not come back
+            within a few seconds, hosting passes automatically to the next person in the room.
           </span>
-          {onClaimHost && (
+          {onClaimHost && hostAway.canClaim && (
             <button
               type="button"
               onClick={onClaimHost}

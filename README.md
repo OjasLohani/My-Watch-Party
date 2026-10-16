@@ -19,7 +19,7 @@ anonymous Auth, Row Level Security, Realtime).
 | Reactions | Live emoji over the video (not stored). |
 | Shared queue | Host adds, removes, reorders and plays titles. |
 | Polls | Host creates/closes; one vote per person (enforced by the database). |
-| Presence | Online/offline dots; guests can take over if the host is gone for 3 minutes. |
+| Presence & host hand-over | Online/offline dots. If the host disconnects (closed tab, crash, lost connection), hosting passes automatically to the next connected guest after about 12–15 s; a page refresh or switching tabs does not. |
 | Demo mode | Without Supabase settings the app runs locally with sample data. |
 
 ## Getting started
@@ -50,6 +50,7 @@ re-run and stops with a clear message if something is wrong):
 1. `supabase/migrations/20261016120000_secure_rooms_and_membership.sql`
 2. `supabase/migrations/20261017120000_stage2_shared_room_features.sql`
 3. `supabase/migrations/20261018120000_stage3_host_takeover.sql`
+4. `supabase/migrations/20261019120000_stage3b_automatic_host_transfer.sql`
 
 Then in the dashboard: **Authentication → Sign In / Providers → Allow
 anonymous sign-ins: ON**. More settings for production are in

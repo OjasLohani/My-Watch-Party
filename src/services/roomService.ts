@@ -1,4 +1,4 @@
-import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
+import { getSupabase, isSupabaseConfigured, supabaseConfig } from '../lib/supabase';
 import { ensureSignedIn } from '../lib/auth';
 import { friendlyError } from '../lib/errors';
 import type { Room, User, DbRoom, DbRoomMember } from '../types';
@@ -206,6 +206,77 @@ export async function transferRoomHost(
 export async function setRoomMovie(code: string, movieId: string): Promise<{ error?: string }> {
   if (!isSupabaseConfigured()) return {};
   return callRpc('set_room_movie', { p_code: code, p_movie_id: movieId });
+}
+
+// --------------------------------------------- automatic host transfer
+
+/** Latest access token, kept for the keepalive request sent on unload */
+let cachedAccessToken: string | null = null;
+
+/**
+ * Renews this member's connection lease (Stage 3b). The server records
+ * its own time; a host whose lease expires is replaced automatically.
+ */
+export async function renewConnectionLease(code: string): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured()) return {};
+  try {
+    const { data } = await (await getSupabase()).auth.getSession();
+    cachedAccessToken = data.session?.access_token ?? null;
+  } catch {
+    // keep the previous token
+  }
+  return callRpc('renew_connection_lease', { p_code: code });
+}
+
+/**
+ * Last renewal while the page unloads (refresh or close). Uses a
+ * keepalive request so the browser finishes it after the page is gone.
+ * Best effort only: nothing depends on it arriving.
+ */
+export function renewConnectionLeaseOnExit(code: string): void {
+  if (!isSupabaseConfigured() || !cachedAccessToken) return;
+  try {
+    void fetch(`${supabaseConfig.url}/rest/v1/rpc/renew_connection_lease`, {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        apikey: supabaseConfig.anonKey,
+        Authorization: `Bearer ${cachedAccessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ p_code: code }),
+    }).catch(() => {});
+  } catch {
+    // ignore: the page is unloading
+  }
+}
+
+/**
+ * Asks the server to hand hosting over if the host's lease expired.
+ * The server decides everything; when the host is still connected this
+ * changes nothing. Returns the room as it is now.
+ */
+export async function autoTransferHost(code: string): Promise<{ room?: Room; error?: string }> {
+  if (!isSupabaseConfigured()) return {};
+  try {
+    const { data, error } = await (await getSupabase()).rpc('auto_transfer_host', { p_code: code });
+    if (error) return { error: friendlyError(error) };
+    return { room: mapDbRoomToRoom(data as DbRoom) };
+  } catch (err: unknown) {
+    return { error: friendlyError(err) };
+  }
+}
+
+/** Current room row (host, movie, name). RLS: members only. */
+export async function fetchRoom(roomId: string): Promise<Room | null> {
+  if (!isSupabaseConfigured()) return null;
+  try {
+    const { data, error } = await (await getSupabase()).from('rooms').select('*').eq('id', roomId).maybeSingle();
+    if (error || !data) return null;
+    return mapDbRoomToRoom(data as DbRoom);
+  } catch {
+    return null;
+  }
 }
 
 /** "Still here" signal; the server records the time (Stage 3 migration) */

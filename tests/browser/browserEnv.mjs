@@ -24,8 +24,9 @@ export function findChrome() {
   return found;
 }
 
-export async function startDevServer() {
-  const server = await createServer({ root: projectRoot, logLevel: 'error', server: { port: 5199, strictPort: false } });
+/** @param {{ plugins?: import('vite').Plugin[] }} [options] extra Vite plugins (e.g. test endpoints) */
+export async function startDevServer({ plugins = [] } = {}) {
+  const server = await createServer({ root: projectRoot, logLevel: 'error', plugins, server: { port: 5199, strictPort: false } });
   await server.listen();
   return { server, baseUrl: server.resolvedUrls.local[0] };
 }

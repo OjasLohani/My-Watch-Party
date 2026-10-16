@@ -14,7 +14,7 @@ security headers in [`vercel.json`](../vercel.json) automatically.
 
 | Where | Setting | Why |
 |---|---|---|
-| SQL Editor | Run the three migrations in `supabase/migrations/` in date order (skip any already run) | Tables, security rules and functions |
+| SQL Editor | Run the migrations in `supabase/migrations/` in date order (skip any already run; never the `.rollback.sql` files) | Tables, security rules and functions |
 | Authentication → Sign In / Providers | **Allow anonymous sign-ins: ON** | Guests get an identity without signing up |
 | Authentication → Attack Protection | Turn on **CAPTCHA** (Cloudflare Turnstile or hCaptcha) once you share the site publicly | Stops scripts from creating thousands of guest accounts. Note: the app does not send a CAPTCHA token yet, so turning this on requires a small code change first |
 | Authentication → Rate Limits | Check "anonymous sign-ins per hour" (default 30 per IP) | Abuse protection |

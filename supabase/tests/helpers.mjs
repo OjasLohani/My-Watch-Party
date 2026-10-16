@@ -17,11 +17,13 @@ export const STAGE2 = readMigration('20261017120000_stage2_shared_room_features.
 export const STAGE2_ROLLBACK = readMigration('20261017120000_stage2_shared_room_features.rollback.sql');
 export const STAGE3 = readMigration('20261018120000_stage3_host_takeover.sql');
 export const STAGE3_ROLLBACK = readMigration('20261018120000_stage3_host_takeover.rollback.sql');
+export const STAGE3B = readMigration('20261019120000_stage3b_automatic_host_transfer.sql');
+export const STAGE3B_ROLLBACK = readMigration('20261019120000_stage3b_automatic_host_transfer.rollback.sql');
 
 /** A database with every migration applied, ready for app-level tests */
 export async function createMigratedDb() {
   const db = await createDb();
-  for (const sql of [STAGE1, STAGE2, STAGE3]) {
+  for (const sql of [STAGE1, STAGE2, STAGE3, STAGE3B]) {
     const result = await migrate(db, sql);
     if (!result.ok) throw new Error(result.error);
   }

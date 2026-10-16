@@ -14,6 +14,9 @@ export const isSupabaseConfigured = (): boolean => {
   );
 };
 
+/** Public project settings (the same values the website already contains) */
+export const supabaseConfig = { url: supabaseUrl, anonKey: supabaseAnonKey };
+
 let clientPromise: Promise<SupabaseClient> | null = null;
 
 /**

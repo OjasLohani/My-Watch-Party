@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Lease Harness</title>
+  </head>
+  <body>
+    <!--
+      Browser test page for automatic host transfer. Runs the app's real
+      useConnectionLease and useAutoHostTransfer hooks for one member.
+      Their server calls go to window.dbRenew / window.dbAsk, which the
+      test (lease-e2e.browser.mjs) connects to a local PostgreSQL with
+      all migrations applied.
+    -->
+    <div id="root"></div>
+    <script type="module" src="./lease.tsx"></script>
+  </body>
+</html>

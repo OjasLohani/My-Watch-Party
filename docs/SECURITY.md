@@ -35,6 +35,35 @@
 | Mass guest accounts | Anonymous sign-ins are rate-limited per IP by Supabase | ⚠️ Recommendation: enable CAPTCHA before wide public use (needs a small app change) |
 | Old anonymous users | Never cleaned up | ⚠️ Recommendation: periodically delete anonymous users older than e.g. 30 days |
 
+## Automatic host transfer (Stage 3b)
+
+**Mechanism:** every member's app renews a *connection lease* on the
+server every 4 s (`renew_connection_lease`); the server stores its own
+time. Any member may call `auto_transfer_host`, but the server ignores
+what the caller believes: it transfers only if the **host's own lease is
+older than 12 s** (or the host left), and it picks the successor itself:
+the longest-present member with a live lease. Leases cannot be read or
+written by browsers, and `host_id` / `is_host` cannot be set directly.
+
+**Guarantees**
+- A guest cannot take hosting while the host's app keeps renewing, no
+  matter how often or how many guests ask (tested).
+- Presence events, client "host is gone" flags or online lists are never
+  trusted; only the server clock and server-stored leases decide.
+- Concurrent requests are serialized by a row lock: exactly one host.
+- A previous host who comes back is a normal member.
+
+**Limitations**
+- A lease proves the host's app recently reached the server, nothing
+  more. A host whose network drops for ~12 s, whose browser freezes a
+  background tab (Memory Saver, mobile app switch, laptop sleep) or whose
+  page takes more than ~12 s to reload loses hosting; the server cannot
+  tell this apart from a crash. The new host can transfer it back.
+- Transfers need a connected member to ask; the app does this
+  automatically every 3 s (first in line) or 9–30 s (others).
+- Hosts on an app version without leases are never auto-transferred; the
+  Stage 3 manual takeover (3 minutes without activity) remains.
+
 ## What a heartbeat means
 
 A heartbeat proves that the host's signed-in app was open and could reach

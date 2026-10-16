@@ -28,10 +28,10 @@ after(async () => {
   await server?.close();
 });
 
-async function openRoom(guests) {
+async function openRoom(guests, src) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 1200 });
-  await page.goto(`${baseUrl}tests/browser/host-sync.html?guests=${guests}`);
+  await page.goto(`${baseUrl}tests/browser/host-sync.html?guests=${guests}${src ? `&src=${encodeURIComponent(src)}` : ''}`);
   await page.waitForFunction(() => document.querySelector('#host video').readyState >= 1, { timeout: 60000 });
   return page;
 }
@@ -61,12 +61,13 @@ test('host transfer during playback: new host keeps playing and takes control', 
 });
 
 test('reconnection: a guest that missed updates catches up within seconds', async () => {
-  const page = await openRoom(1);
+  // Local video: the test seeks far ahead and must not depend on the network
+  const page = await openRoom(1, await ensureLocalTestVideo());
   await page.click('#host button[aria-label="Play video"]');
   await waitUntilPlaying(page, 'guest');
 
   await page.evaluate(() => window.harness.setConnected('guest', false));
-  await clickProgressBar(page, 'host', 0.5); // the guest does not hear about this
+  await clickProgressBar(page, 'host', 0.2); // ~130 s; the guest does not hear about this
   await waitUntilPlaying(page, 'host');
   await wait(1500);
   const apart = Math.abs((await videoState(page, 'host')).time - (await videoState(page, 'guest')).time);

@@ -11,6 +11,27 @@ Browser tests use an in-page fake server (80 ms delay) instead of
 Supabase, and a throwaway Chrome profile. Nothing touches your Supabase
 project.
 
+## Automatic host transfer (end-to-end)
+
+`tests/browser/lease-e2e.browser.mjs` runs host and guests as separate
+Chrome browser contexts with the app's real lease and transfer hooks;
+their requests are executed as each user against a local PostgreSQL 17
+with every migration applied (real SQL, real 12 s lease, database clock).
+Realtime notifications and the reconnect resync are simulated.
+
+| Scenario | Result |
+|---|---|
+| Host closes the tab | First guest becomes host after 12.7–13.0 s; exactly one host |
+| Host loses internet | Transfer after ~12.9 s; old host rejoins as a normal member |
+| Host refreshes (twice) | Keeps hosting; the unload keepalive renewal is received |
+| Host switches to another tab | Keeps hosting; lease renewed ≥ 4 times in 20 s |
+| Guests ask 20 times while host is connected | No change |
+| Several guests ask at the same moment | One new host, seen identically by all |
+
+Expected delay from disconnect to transfer: 12–15 s after a normal tab
+close (the page sends a final renewal), 8–15 s after a crash or network
+loss, plus one request round trip (`src/lib/hostLease.ts`).
+
 ## Synchronization measurements
 
 Targets from the assignment: ≥ 10 users per room, host command delivery
@@ -86,5 +107,6 @@ video.
 | Host buffering | When the host's video resumes, the host re-sends its real position |
 | Video source fails | Player switches to the backup copy at the same position; if all fail, "Video unavailable" with Try Again |
 | Autoplay blocked | Viewer sees "The host is playing — click to join" |
-| Host closes laptop / disconnects | Presence shows them offline; after 1 minute guests see a banner; after 3 minutes without any host activity (heartbeat, joining, becoming host, playback command, chat), any member can **take over hosting**. A host who just joined or just received the role is protected for 3 minutes |
+| Host disconnects (closed tab, crash, lost connection) | Hosting passes automatically to the longest-present connected guest after the host's 12 s lease expires: measured **12.7–13.0 s** (end-to-end test). Refresh and tab switching keep hosting. |
+| Host on an older app version disconnects | Presence shows them offline; after 1 minute guests see a banner; after 3 minutes without any host activity (heartbeat, joining, becoming host, playback command, chat), any member can **take over hosting**. A host who just joined or just received the role is protected for 3 minutes |
 | Two actions at once | Database row locks: votes vs poll closing, host transfer vs takeover, member limit, chat rate limit |
