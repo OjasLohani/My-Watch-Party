@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-cinema: #06070B;
+    --surface-1: #0B0D14;
+    --surface-2: #10131F;
+    --surface-3: #171B2C;
+    --accent-violet: #8B5CF6;
+    --accent-cyan: #06B6D4;
+    --border-subtle: rgba(255, 255, 255, 0.08);
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--bg-cinema);
+    color: #F1F5F9;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  #root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Sleek Minimal Dark Scrollbar */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+}
+
+/* Floating reaction animation */
+@keyframes reactionFloat {
+  0% {
+    transform: translateY(0) scale(0.7) rotate(0deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(-24px) scale(1.15) rotate(-5deg);
+  }
+  60% {
+    opacity: 0.95;
+    transform: translateY(-90px) scale(1.25) rotate(5deg);
+  }
+  100% {
+    transform: translateY(-180px) scale(1.3) rotate(0deg);
+    opacity: 0;
+  }
+}
+
+.animate-reaction-float {
+  animation: reactionFloat 1.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Subtle Cinema Ambient Backlight */
+.cinema-ambient-glow {
+  box-shadow: 0 0 60px -15px rgba(139, 92, 246, 0.25), 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+}
