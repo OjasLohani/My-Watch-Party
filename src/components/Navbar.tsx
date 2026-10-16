@@ -9,6 +9,8 @@ interface NavbarProps {
   onOpenCreateModal: () => void;
   onOpenJoinModal: () => void;
   onToggleHostRole: () => void;
+  /** False in real rooms, where the database decides who is host */
+  canToggleHostRole?: boolean;
 }
 
 export function Navbar({
@@ -19,6 +21,7 @@ export function Navbar({
   onOpenCreateModal,
   onOpenJoinModal,
   onToggleHostRole,
+  canToggleHostRole = true,
 }: NavbarProps) {
   return (
     <nav className="sticky top-0 z-40 w-full border-b border-white/[0.08] bg-[#06070B]/85 backdrop-blur-xl">
@@ -102,8 +105,9 @@ export function Navbar({
           <div className="border-l border-white/[0.08] pl-2.5 sm:pl-3">
             <button
               type="button"
-              onClick={onToggleHostRole}
-              title={`Role: ${currentUser.isHost ? 'Host' : 'Viewer'} • Click to toggle`}
+              onClick={canToggleHostRole ? onToggleHostRole : undefined}
+              disabled={!canToggleHostRole}
+              title={`Role: ${currentUser.isHost ? 'Host' : 'Viewer'}${canToggleHostRole ? ' • Click to toggle (demo)' : ''}`}
               className="group flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.02] p-1 pr-3 transition-colors hover:border-violet-500/40 hover:bg-white/[0.05]"
             >
               <img

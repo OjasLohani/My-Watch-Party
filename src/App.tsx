@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { DiscoverHero } from './components/DiscoverHero';
 import { MovieGrid } from './components/MovieGrid';
@@ -9,13 +9,14 @@ import { ToastContainer } from './components/ToastContainer';
 import { StageOverview } from './components/StageOverview';
 import { isSupabaseConfigured } from './lib/supabase';
 import { getOrCreateSessionUser, saveSessionUser } from './lib/session';
-import { 
-  createRoom as apiCreateRoom, 
-  getRoomByCode as apiGetRoomByCode, 
-  getRoomMembers as apiGetRoomMembers, 
-  joinRoomMember as apiJoinRoomMember, 
-  leaveRoomMember as apiLeaveRoomMember, 
-  transferRoomHost as apiTransferRoomHost 
+import { ensureSignedIn } from './lib/auth';
+import {
+  createRoom as apiCreateRoom,
+  joinRoom as apiJoinRoom,
+  getRoomMembers as apiGetRoomMembers,
+  leaveRoom as apiLeaveRoom,
+  transferRoomHost as apiTransferRoomHost,
+  setRoomMovie as apiSetRoomMovie
 } from './services/roomService';
 import { useRoomRealtime } from './hooks/useRoomRealtime';
 import { 
@@ -74,25 +75,39 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Join Room by Code (Used by modal and invite URLs)
-  const handleJoinRoom = useCallback(async (code: string) => {
+  // Sign in as a guest (Supabase anonymous auth) so this browser has a
+  // real, server-verified identity before creating or joining rooms.
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    ensureSignedIn()
+      .then((authUserId) => {
+        setCurrentUser((prev) => (prev.id === authUserId ? prev : { ...prev, id: authUserId }));
+      })
+      .catch((err: unknown) => {
+        addToast(err instanceof Error ? err.message : 'Guest sign-in failed.', 'error');
+      });
+  }, [addToast]);
+
+  // Join Room by Code (Used by modal and invite URLs).
+  // Returns an error message, or null on success.
+  const handleJoinRoom = useCallback(async (code: string): Promise<string | null> => {
     const cleanCode = code.trim().toUpperCase();
 
     try {
-      const { room, error } = await apiGetRoomByCode(cleanCode);
+      const userId = isSupabaseConfigured() ? await ensureSignedIn() : currentUser.id;
+      const joiningUser: User = { ...currentUser, id: userId };
+
+      // The server records membership and decides host status
+      const { room, error } = await apiJoinRoom(cleanCode, joiningUser);
 
       if (error || !room) {
-        addToast(error || `No room found with code "${cleanCode}".`, 'error');
-        return;
+        const message = error || `No room found with code "${cleanCode}".`;
+        addToast(message, 'error');
+        return message;
       }
 
-      // Check if user is the room host
-      const isHost = room.hostId === currentUser.id;
-      const updatedUser: User = { ...currentUser, isHost };
+      const updatedUser: User = { ...joiningUser, isHost: room.hostId === userId };
       setCurrentUser(updatedUser);
-
-      // Join room in database
-      await apiJoinRoomMember(room.id, updatedUser);
 
       // Fetch active room members
       const roomMembers = await apiGetRoomMembers(room.id, updatedUser.id);
@@ -122,19 +137,27 @@ export default function App() {
       };
       setChatMessages((prev) => [...prev, joinMsg]);
       addToast(`Connected to room ${room.code}!`, 'success');
+      return null;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to join room.';
       addToast(msg, 'error');
+      return msg;
     }
   }, [currentUser, addToast]);
 
-  // Check URL query parameters on initial page load for invite link (?room=CODE)
+  // Check URL query parameters on initial page load for invite link (?room=CODE).
+  // The ref makes sure the invite is joined only once, even though
+  // handleJoinRoom changes whenever the current user changes.
+  const inviteHandledRef = useRef(false);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const inviteCode = params.get('room');
-    if (inviteCode) {
-      handleJoinRoom(inviteCode);
-    }
+    const inviteCode = new URLSearchParams(window.location.search).get('room');
+    if (!inviteCode) return;
+    const timer = setTimeout(() => {
+      if (inviteHandledRef.current) return;
+      inviteHandledRef.current = true;
+      void handleJoinRoom(inviteCode);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [handleJoinRoom]);
 
   // Real-time synchronization hook for members and room state
@@ -157,7 +180,25 @@ export default function App() {
   });
 
   // Switch movie to play in room
-  const handlePlayMovie = (movie: Movie) => {
+  const handlePlayMovie = async (movie: Movie) => {
+    if (isSupabaseConfigured()) {
+      if (activeRoom.isMockData) {
+        // Not in a real room yet: start one with this movie preselected.
+        setSelectedMovieForCreate(movie.id);
+        setIsCreateModalOpen(true);
+        return;
+      }
+      if (!currentUser.isHost) {
+        addToast('Only the host can change the movie.', 'warning');
+        return;
+      }
+      const { error } = await apiSetRoomMovie(activeRoom.code, movie.id);
+      if (error) {
+        addToast(error, 'error');
+        return;
+      }
+    }
+
     setCurrentMovie(movie);
     setActiveRoom((prev) => ({ ...prev, currentMovieId: movie.id }));
     setCurrentView('room');
@@ -200,20 +241,27 @@ export default function App() {
     addToast(`Added "${movie.title}" to room playlist!`, 'success');
   };
 
-  // Create Room Handler
+  // Create Room Handler. Returns an error message, or null on success.
   const handleCreateRoom = async (data: {
     roomName: string;
     movieId: string;
     isPrivate: boolean;
     hostName: string;
-  }) => {
-    const updatedUser: User = {
+  }): Promise<string | null> => {
+    let updatedUser: User = {
       ...currentUser,
       name: data.hostName,
       isHost: true,
     };
-    setCurrentUser(updatedUser);
     saveSessionUser(updatedUser);
+
+    if (isSupabaseConfigured()) {
+      try {
+        updatedUser = { ...updatedUser, id: await ensureSignedIn() };
+      } catch (err: unknown) {
+        return err instanceof Error ? err.message : 'Guest sign-in failed.';
+      }
+    }
 
     const chosenMovie = mockMovies.find((m) => m.id === data.movieId) || mockMovies[0];
 
@@ -224,10 +272,12 @@ export default function App() {
       hostUser: updatedUser,
     });
 
-    if (error) {
-      addToast(error, 'warning');
+    if (!room) {
+      addToast(error, 'error');
+      return error;
     }
 
+    setCurrentUser(updatedUser);
     setActiveRoom(room);
     setCurrentMovie(chosenMovie);
     setMembers([updatedUser]);
@@ -239,6 +289,7 @@ export default function App() {
     window.history.replaceState({}, '', newUrl.toString());
 
     addToast(`Room "${room.name}" created with code ${room.code}!`, 'success');
+    return null;
   };
 
   // Send Chat Message
@@ -282,8 +333,14 @@ export default function App() {
     const target = members.find((m) => m.id === targetUserId);
     if (!target) return;
 
-    await apiTransferRoomHost(activeRoom.id, targetUserId, currentUser.id);
+    // The server rejects this unless we are the current host
+    const { success, error } = await apiTransferRoomHost(activeRoom.code, targetUserId);
+    if (!success) {
+      addToast(error || 'Failed to transfer host.', 'error');
+      return;
+    }
 
+    setActiveRoom((prev) => ({ ...prev, hostId: targetUserId }));
     setMembers((prev) =>
       prev.map((m) => ({
         ...m,
@@ -299,8 +356,11 @@ export default function App() {
     addToast(`Host controls transferred to ${target.name}.`, 'info');
   };
 
-  // Toggle Current User Host Role
+  // Toggle Current User Host Role (demo rooms only — in real rooms the
+  // database decides who is host)
+  const canToggleHostRole = activeRoom.isMockData;
   const handleToggleHostRole = () => {
+    if (!canToggleHostRole) return;
     const nextRole = !currentUser.isHost;
     setCurrentUser((prev) => ({ ...prev, isHost: nextRole }));
     setMembers((prev) =>
@@ -311,7 +371,16 @@ export default function App() {
 
   // Leave room handler
   const handleLeaveRoom = async () => {
-    await apiLeaveRoomMember(activeRoom.id, currentUser.id);
+    if (!activeRoom.isMockData) {
+      const { error } = await apiLeaveRoom(activeRoom.code);
+      if (error) {
+        addToast(error, 'warning');
+      }
+      // Back to the local demo room so nothing acts on the room we left
+      setActiveRoom(mockRoom);
+      setMembers([{ ...currentUser, isHost: false }]);
+      setCurrentUser((prev) => ({ ...prev, isHost: false }));
+    }
 
     // Clear room query param from URL
     const newUrl = new URL(window.location.href);
@@ -350,6 +419,7 @@ export default function App() {
         }}
         onOpenJoinModal={() => setIsJoinModalOpen(true)}
         onToggleHostRole={handleToggleHostRole}
+        canToggleHostRole={canToggleHostRole}
       />
 
       {/* Backend Status Notice */}
@@ -399,6 +469,7 @@ export default function App() {
                       driftMs={driftMs}
                       onSimulateDrift={handleSimulateDrift}
                       onToggleHostRole={handleToggleHostRole}
+                      canToggleHostRole={canToggleHostRole}
                     />
                   </div>
                 )}
@@ -432,14 +503,16 @@ export default function App() {
         )}
       </main>
 
-      {/* Modals */}
-      <CreateRoomModal
-        isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
-        movies={mockMovies}
-        selectedMovieId={selectedMovieForCreate}
-        onCreateRoom={handleCreateRoom}
-      />
+      {/* Modals (Create Room mounts fresh on each open so the preselected movie applies) */}
+      {isCreateModalOpen && (
+        <CreateRoomModal
+          isOpen={isCreateModalOpen}
+          onClose={() => setIsCreateModalOpen(false)}
+          movies={mockMovies}
+          selectedMovieId={selectedMovieForCreate}
+          onCreateRoom={handleCreateRoom}
+        />
+      )}
 
       <JoinRoomModal
         isOpen={isJoinModalOpen}

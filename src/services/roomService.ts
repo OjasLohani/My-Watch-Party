@@ -1,16 +1,29 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { ensureSignedIn } from '../lib/auth';
 import type { Room, User, DbRoom, DbRoomMember } from '../types';
 import { mockRoom, mockMembers } from '../mockData';
 
+// When Supabase is configured, every operation below goes through the
+// secure database functions defined in
+// supabase/migrations/20261016120000_secure_rooms_and_membership.sql.
+// Failures are returned as errors — there is no silent local fallback.
+// The local "demo mode" branches only run when Supabase is NOT configured.
+
 const CODE_PREFIXES = ['FILM', 'CAMPUS', 'CINE', 'INDIE', 'NEON', 'VIBE'];
+const CODE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
+
+/** Format of codes issued by the server, e.g. FILM-7K3QX9 */
+export const ROOM_CODE_PATTERN = /^[A-Z]{2,10}-[2-9A-HJKMNP-Z]{6}$/;
 
 /**
- * Generates a memorable, human-friendly uppercase room code (e.g. FILM-404, CAMPUS-819)
+ * Generates a demo-mode room code in the same format the server uses.
+ * Real rooms get their code from the database.
  */
 export function generateRoomCode(): string {
-  const prefix = CODE_PREFIXES[Math.floor(Math.random() * CODE_PREFIXES.length)];
-  const num = Math.floor(100 + Math.random() * 900);
-  return `${prefix}-${num}`;
+  const random = crypto.getRandomValues(new Uint8Array(7));
+  const prefix = CODE_PREFIXES[random[0] % CODE_PREFIXES.length];
+  const suffix = Array.from(random.slice(1), (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
+  return `${prefix}-${suffix}`;
 }
 
 export interface CreateRoomInput {
@@ -20,154 +33,102 @@ export interface CreateRoomInput {
   hostUser: User;
 }
 
-/**
- * Creates a new room in Supabase (or local fallback if Supabase keys are pending)
- */
-export async function createRoom(input: CreateRoomInput): Promise<{ room: Room; error?: string }> {
-  const code = generateRoomCode();
+type RoomResult = { room: Room; error?: undefined } | { room: null; error: string };
 
-  if (!isSupabaseConfigured()) {
-    // Graceful fallback to interactive local room if user has not entered Supabase keys yet
-    const localRoom: Room = {
-      id: `local-room-${Date.now()}`,
-      code,
-      name: input.name,
-      description: `Synchronized session created by ${input.hostUser.name}.`,
-      hostId: input.hostUser.id,
-      currentMovieId: input.movieId,
-      membersCount: 1,
-      isPrivate: input.isPrivate,
-      isMockData: true,
-    };
-    return { room: localRoom };
+function errorMessage(err: unknown, fallback: string): string {
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+    return err.message;
   }
+  return fallback;
+}
 
-  try {
-    // 1. Insert room record
-    const { data: roomData, error: roomError } = await supabase
-      .from('rooms')
-      .insert({
-        code,
-        name: input.name,
-        description: `Synchronized screening hosted by ${input.hostUser.name}.`,
-        host_id: input.hostUser.id,
-        current_movie_id: input.movieId,
-        is_private: input.isPrivate,
-      })
-      .select()
-      .single();
+function mapDbRoomToRoom(data: DbRoom): Room {
+  return {
+    id: data.id,
+    code: data.code,
+    name: data.name,
+    description: data.description || '',
+    hostId: data.host_id,
+    currentMovieId: data.current_movie_id,
+    membersCount: 1,
+    isPrivate: data.is_private,
+    isMockData: false,
+  };
+}
 
-    if (roomError) {
-      // If code collided (rare), retry once with fresh code
-      if (roomError.code === '23505') {
-        const altCode = generateRoomCode();
-        const { data: retryData, error: retryError } = await supabase
-          .from('rooms')
-          .insert({
-            code: altCode,
-            name: input.name,
-            description: `Synchronized screening hosted by ${input.hostUser.name}.`,
-            host_id: input.hostUser.id,
-            current_movie_id: input.movieId,
-            is_private: input.isPrivate,
-          })
-          .select()
-          .single();
-
-        if (retryError) throw retryError;
-        return mapDbRoomToRoom(retryData);
-      }
-      throw roomError;
-    }
-
-    // 2. Insert host member record
-    const { error: memberError } = await supabase
-      .from('room_members')
-      .insert({
-        room_id: roomData.id,
-        user_id: input.hostUser.id,
-        name: input.hostUser.name,
-        avatar: input.hostUser.avatar,
-        color: input.hostUser.color,
-        is_host: true,
-      });
-
-    if (memberError) {
-      console.warn('Host membership insert notice:', memberError);
-    }
-
-    return mapDbRoomToRoom(roomData);
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : 'Failed to create room in database.';
-    console.error('createRoom error:', err);
+/**
+ * Creates a new room. The signed-in user becomes host on the server.
+ */
+export async function createRoom(input: CreateRoomInput): Promise<RoomResult> {
+  if (!isSupabaseConfigured()) {
+    // Demo mode: Supabase keys are not configured.
     return {
       room: {
-        id: `room-${Date.now()}`,
-        code,
+        id: `local-room-${Date.now()}`,
+        code: generateRoomCode(),
         name: input.name,
-        description: '',
+        description: `Synchronized session created by ${input.hostUser.name}.`,
         hostId: input.hostUser.id,
         currentMovieId: input.movieId,
         membersCount: 1,
         isPrivate: input.isPrivate,
         isMockData: true,
       },
-      error: errorMsg,
-    };
-  }
-}
-
-/**
- * Finds an existing room by its human-friendly code
- */
-export async function getRoomByCode(code: string): Promise<{ room: Room | null; error?: string }> {
-  const cleanCode = code.trim().toUpperCase();
-
-  if (!isSupabaseConfigured()) {
-    if (cleanCode === mockRoom.code) {
-      return { room: mockRoom };
-    }
-    // Create an ad-hoc local mock room for testing
-    return {
-      room: {
-        ...mockRoom,
-        code: cleanCode,
-        name: `Party Room: ${cleanCode}`,
-      },
     };
   }
 
   try {
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('*')
-      .eq('code', cleanCode)
-      .maybeSingle();
-
+    await ensureSignedIn();
+    const { data, error } = await supabase.rpc('create_room', {
+      p_name: input.name,
+      p_movie_id: input.movieId,
+      p_is_private: input.isPrivate,
+      p_display_name: input.hostUser.name,
+      p_avatar: input.hostUser.avatar,
+      p_color: input.hostUser.color,
+    });
     if (error) throw error;
-    if (!data) return { room: null, error: `No active room found with code "${cleanCode}".` };
-
-    const mappedRoom: Room = {
-      id: data.id,
-      code: data.code,
-      name: data.name,
-      description: data.description || '',
-      hostId: data.host_id,
-      currentMovieId: data.current_movie_id,
-      membersCount: 1,
-      isPrivate: data.is_private,
-      isMockData: false,
-    };
-
-    return { room: mappedRoom };
+    return { room: mapDbRoomToRoom(data as DbRoom) };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Database error while querying room.';
-    return { room: null, error: msg };
+    console.error('createRoom error:', err);
+    return { room: null, error: errorMessage(err, 'Failed to create room.') };
   }
 }
 
 /**
- * Fetches all members in a room and marks `isSelf` based on the current user ID
+ * Joins a room by its code and returns it. Membership and host status
+ * are decided by the server.
+ */
+export async function joinRoom(code: string, user: User): Promise<RoomResult> {
+  const cleanCode = code.trim().toUpperCase();
+
+  if (!isSupabaseConfigured()) {
+    // Demo mode: any code opens a local mock room.
+    if (cleanCode === mockRoom.code) {
+      return { room: mockRoom };
+    }
+    return { room: { ...mockRoom, code: cleanCode, name: `Party Room: ${cleanCode}` } };
+  }
+
+  try {
+    await ensureSignedIn();
+    const { data, error } = await supabase.rpc('join_room', {
+      p_code: cleanCode,
+      p_display_name: user.name,
+      p_avatar: user.avatar,
+      p_color: user.color,
+    });
+    if (error) throw error;
+    return { room: mapDbRoomToRoom(data as DbRoom) };
+  } catch (err: unknown) {
+    console.error('joinRoom error:', err);
+    return { room: null, error: errorMessage(err, 'Failed to join room.') };
+  }
+}
+
+/**
+ * Fetches all members in a room and marks `isSelf` based on the current user ID.
+ * Row Level Security only returns rows for rooms the user belongs to.
  */
 export async function getRoomMembers(roomId: string, currentUserId: string): Promise<User[]> {
   if (!isSupabaseConfigured()) {
@@ -203,100 +164,54 @@ export async function getRoomMembers(roomId: string, currentUserId: string): Pro
 }
 
 /**
- * Adds or updates a user in the room_members table
+ * Removes the current user from a room. If they were host, the server
+ * hands host to the longest-present remaining member.
  */
-export async function joinRoomMember(roomId: string, user: User): Promise<void> {
-  if (!isSupabaseConfigured()) return;
+export async function leaveRoom(code: string): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured()) return {};
 
-  try {
-    await supabase.from('room_members').upsert(
-      {
-        room_id: roomId,
-        user_id: user.id,
-        name: user.name,
-        avatar: user.avatar,
-        color: user.color,
-        is_host: user.isHost,
-        last_seen_at: new Date().toISOString(),
-      },
-      { onConflict: 'room_id,user_id' }
-    );
-  } catch (err) {
-    console.error('joinRoomMember error:', err);
+  const { error } = await supabase.rpc('leave_room', { p_code: code });
+  if (error) {
+    console.error('leaveRoom error:', error);
+    return { error: error.message };
   }
+  return {};
 }
 
 /**
- * Removes a user from room_members when leaving
- */
-export async function leaveRoomMember(roomId: string, userId: string): Promise<void> {
-  if (!isSupabaseConfigured()) return;
-
-  try {
-    await supabase
-      .from('room_members')
-      .delete()
-      .eq('room_id', roomId)
-      .eq('user_id', userId);
-  } catch (err) {
-    console.error('leaveRoomMember error:', err);
-  }
-}
-
-/**
- * Transfers host permissions in database
+ * Transfers host permissions. The server rejects this unless the caller
+ * is the current host and the target is a member.
  */
 export async function transferRoomHost(
-  roomId: string,
-  newHostUserId: string,
-  prevHostUserId: string
+  code: string,
+  newHostUserId: string
 ): Promise<{ success: boolean; error?: string }> {
   if (!isSupabaseConfigured()) {
     return { success: true };
   }
 
-  try {
-    // 1. Update rooms table
-    const { error: roomErr } = await supabase
-      .from('rooms')
-      .update({ host_id: newHostUserId, updated_at: new Date().toISOString() })
-      .eq('id', roomId);
-
-    if (roomErr) throw roomErr;
-
-    // 2. Demote previous host
-    await supabase
-      .from('room_members')
-      .update({ is_host: false })
-      .eq('room_id', roomId)
-      .eq('user_id', prevHostUserId);
-
-    // 3. Promote new host
-    await supabase
-      .from('room_members')
-      .update({ is_host: true })
-      .eq('room_id', roomId)
-      .eq('user_id', newHostUserId);
-
-    return { success: true };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Failed to transfer host.';
-    return { success: false, error: msg };
+  const { error } = await supabase.rpc('transfer_host', {
+    p_code: code,
+    p_new_host_id: newHostUserId,
+  });
+  if (error) {
+    return { success: false, error: error.message };
   }
+  return { success: true };
 }
 
-function mapDbRoomToRoom(data: DbRoom): { room: Room } {
-  return {
-    room: {
-      id: data.id,
-      code: data.code,
-      name: data.name,
-      description: data.description || '',
-      hostId: data.host_id,
-      currentMovieId: data.current_movie_id,
-      membersCount: 1,
-      isPrivate: data.is_private,
-      isMockData: false,
-    },
-  };
+/**
+ * Changes the room's current movie. Host only (enforced by the server).
+ */
+export async function setRoomMovie(code: string, movieId: string): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured()) return {};
+
+  const { error } = await supabase.rpc('set_room_movie', {
+    p_code: code,
+    p_movie_id: movieId,
+  });
+  if (error) {
+    return { error: error.message };
+  }
+  return {};
 }

@@ -12,7 +12,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import type { Movie } from '../../types';
-import { createPlaybackService, usePlaybackRealtime } from '../../lib/playbackService';
+import { createPlaybackService } from '../../lib/playbackService';
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -79,37 +79,10 @@ export function VideoPlayer({ movie, isHost, room, currentUser, driftMs, onSimul
     }
   }, [movie.id, playbackService]);
 
-  // Apply playback commands received from other clients
-  usePlaybackRealtime(playbackService, (command) => {
-    // The service.applyCommand handles version checking internally
-    const { type, payload } = command;
-
-    switch (type) {
-      case 'play':
-        setIsPlaying(true);
-        break;
-      case 'pause':
-        setIsPlaying(false);
-        break;
-      case 'seek':
-        if (payload.currentTime !== undefined) {
-          setCurrentTime(payload.currentTime);
-          if (videoRef.current) {
-            videoRef.current.currentTime = payload.currentTime;
-          }
-        }
-        break;
-      case 'video-change':
-        if (payload.videoId) {
-          // Could trigger movie switch; for now, update videoId
-          playbackService.setVideoId(payload.videoId);
-        }
-        if (payload.isPlaying !== undefined) {
-          setIsPlaying(payload.isPlaying);
-        }
-        break;
-    }
-  })();
+  // Remote playback commands: the previous subscription here opened and
+  // closed a realtime channel on every render (for a table that does not
+  // exist), flooding Supabase. It is disabled until synchronized playback
+  // is rebuilt on secure realtime channels.
 
   // Update local UI state from playback service state
   useEffect(() => {

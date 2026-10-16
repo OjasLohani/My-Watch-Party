@@ -7,7 +7,8 @@ interface CreateRoomModalProps {
   onClose: () => void;
   movies: Movie[];
   selectedMovieId?: string;
-  onCreateRoom: (data: { roomName: string; movieId: string; isPrivate: boolean; hostName: string }) => void;
+  /** Resolves to an error message, or null when the room was created */
+  onCreateRoom: (data: { roomName: string; movieId: string; isPrivate: boolean; hostName: string }) => Promise<string | null>;
 }
 
 export function CreateRoomModal({
@@ -26,7 +27,7 @@ export function CreateRoomModal({
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!roomName.trim()) {
       setError('Please provide a name for your room.');
@@ -40,16 +41,20 @@ export function CreateRoomModal({
     setError('');
     setIsLoading(true);
 
-    setTimeout(() => {
-      setIsLoading(false);
-      onCreateRoom({
-        roomName: roomName.trim(),
-        movieId,
-        isPrivate,
-        hostName: hostName.trim(),
-      });
-      onClose();
-    }, 450);
+    const createError = await onCreateRoom({
+      roomName: roomName.trim(),
+      movieId,
+      isPrivate,
+      hostName: hostName.trim(),
+    });
+    setIsLoading(false);
+
+    // Keep the dialog open so the user can see what went wrong
+    if (createError) {
+      setError(createError);
+      return;
+    }
+    onClose();
   };
 
   return (

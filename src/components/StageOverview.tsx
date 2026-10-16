@@ -18,6 +18,8 @@ interface StageOverviewProps {
   driftMs: number;
   onSimulateDrift: () => void;
   onToggleHostRole: () => void;
+  /** False in real rooms, where the database decides who is host */
+  canToggleHostRole?: boolean;
 }
 
 export function StageOverview({
@@ -27,6 +29,7 @@ export function StageOverview({
   driftMs,
   onSimulateDrift,
   onToggleHostRole,
+  canToggleHostRole = true,
 }: StageOverviewProps) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [checkedTasks, setCheckedTasks] = useState<Record<string, boolean>>({
@@ -117,13 +120,15 @@ export function StageOverview({
                   <span>Host: {currentUser.isHost ? 'You (Alex)' : 'Jordan Lee'}</span>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={onToggleHostRole}
-                  className="ml-auto rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-300 transition-colors hover:bg-violet-500/20"
-                >
-                  Switch Role ({currentUser.isHost ? 'Make Spectator' : 'Make Host'})
-                </button>
+                {canToggleHostRole && (
+                  <button
+                    type="button"
+                    onClick={onToggleHostRole}
+                    className="ml-auto rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-300 transition-colors hover:bg-violet-500/20"
+                  >
+                    Switch Role ({currentUser.isHost ? 'Make Spectator' : 'Make Host'})
+                  </button>
+                )}
               </div>
             </div>
           </div>

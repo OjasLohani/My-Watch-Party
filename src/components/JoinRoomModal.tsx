@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { X, Key, Loader2, ArrowRight } from 'lucide-react';
+import { isSupabaseConfigured } from '../lib/supabase';
+import { ROOM_CODE_PATTERN } from '../services/roomService';
 
 interface JoinRoomModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onJoinRoom: (code: string) => void;
+  /** Resolves to an error message, or null when the room was joined */
+  onJoinRoom: (code: string) => Promise<string | null>;
 }
 
 export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProps) {
@@ -14,11 +17,15 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanCode = code.trim().toUpperCase();
     if (!cleanCode) {
       setError('Please enter a room code.');
+      return;
+    }
+    if (isSupabaseConfigured() && !ROOM_CODE_PATTERN.test(cleanCode)) {
+      setError('Room codes look like FILM-7K3QX9 (a word, a dash, then 6 letters/numbers).');
       return;
     }
     if (cleanCode.length < 4) {
@@ -29,11 +36,16 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
     setError('');
     setIsLoading(true);
 
-    setTimeout(() => {
-      setIsLoading(false);
-      onJoinRoom(cleanCode);
-      onClose();
-    }, 400);
+    const joinError = await onJoinRoom(cleanCode);
+    setIsLoading(false);
+
+    // Keep the dialog open so the user can see what went wrong
+    if (joinError) {
+      setError(joinError);
+      return;
+    }
+    setCode('');
+    onClose();
   };
 
   const handleSelectQuickCode = (quickCode: string) => {
@@ -88,7 +100,7 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
                 type="text"
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="e.g. FILM-CLUB-404"
+                placeholder="e.g. FILM-7K3QX9"
                 className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] pl-10 pr-4 py-2.5 font-mono text-sm uppercase text-white placeholder-slate-500 tracking-wider transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
                 autoFocus
               />
@@ -96,7 +108,8 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
             </div>
           </div>
 
-          {/* Quick test codes for demo */}
+          {/* Quick test codes for demo (only meaningful without Supabase) */}
+          {!isSupabaseConfigured() && (
           <div>
             <span className="text-[11px] text-slate-400 font-mono">Quick Test Rooms (Mock Data):</span>
             <div className="mt-2 flex flex-wrap gap-2">
@@ -112,6 +125,7 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
               ))}
             </div>
           </div>
+          )}
 
           {/* Actions */}
           <div className="mt-6 flex items-center justify-end gap-3 pt-3 border-t border-white/[0.06]">

@@ -17,7 +17,8 @@ export function useRoomRealtime({
   onRoomUpdate,
 }: UseRoomRealtimeProps) {
   useEffect(() => {
-    if (!room || !isSupabaseConfigured()) return;
+    // Demo rooms are local only; never subscribe to the database for them
+    if (!room || room.isMockData || !isSupabaseConfigured()) return;
 
     const roomId = room.id;
     const channelName = `room_realtime_${room.code}`;
@@ -91,6 +92,6 @@ export function useRoomRealtime({
     return () => {
       channel.unsubscribe();
     };
-  }, [room?.id, room?.code, currentUser.id]);
+  }, [room?.id, room?.code, room?.isMockData, currentUser.id]);
 }
 
