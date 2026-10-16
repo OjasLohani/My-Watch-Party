@@ -33,7 +33,17 @@ export function ChatPanel({
   return (
     <div className="flex h-full flex-col bg-[#0A0C13]">
       {/* Messages Feed */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[300px] max-h-[460px]">
+      <div
+        className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[300px] max-h-[460px]"
+        role="log"
+        aria-live="polite"
+        aria-label="Chat messages"
+      >
+        {messages.length === 0 && (
+          <p className="mt-10 text-center text-[11px] text-slate-400">
+            No messages yet. Say hello to the room 👋
+          </p>
+        )}
         {messages.map((msg) => {
           if (msg.isSystem) {
             return (
@@ -128,6 +138,7 @@ export function ChatPanel({
             onChange={(e) => setInputText(e.target.value)}
             maxLength={500}
             placeholder="Send message to theater..."
+            aria-label="Chat message"
             className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] py-2.5 pl-3.5 pr-10 text-xs text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
           />
           <button

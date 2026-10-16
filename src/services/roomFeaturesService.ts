@@ -1,4 +1,5 @@
-import { supabase } from '../lib/supabase';
+import { getSupabase } from '../lib/supabase';
+import { friendlyError } from '../lib/errors';
 import { pickClockOffset } from '../lib/playbackService';
 import type { ClockSample, PlaybackSnapshot } from '../lib/playbackState';
 import type { ChatMessage, Movie, PlaylistItem, Poll } from '../types';
@@ -9,6 +10,25 @@ import type { ChatMessage, Movie, PlaylistItem, Poll } from '../types';
 // (see supabase/migrations/20261017120000_stage2_shared_room_features.sql).
 
 type Result<T = undefined> = { data?: T; error?: string };
+
+/** Runs a read; on any failure (network, offline, timeout) logs it and returns `fallback` */
+async function readOr<T>(label: string, fallback: T, read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (err) {
+    console.error(`${label} error:`, err);
+    return fallback;
+  }
+}
+
+/** Runs a write; any failure becomes a readable error message */
+async function writeResult<T>(write: () => Promise<Result<T>>): Promise<Result<T>> {
+  try {
+    return await write();
+  } catch (err) {
+    return { error: friendlyError(err) };
+  }
+}
 
 // ---------------------------------------------------------------- playback
 
@@ -35,13 +55,15 @@ export function mapPlayback(row: DbPlayback): PlaybackSnapshot {
   };
 }
 
-export async function fetchPlayback(roomId: string): Promise<PlaybackSnapshot | null> {
-  const { data, error } = await supabase.from('room_playback').select('*').eq('room_id', roomId).maybeSingle();
+export function fetchPlayback(roomId: string): Promise<PlaybackSnapshot | null> {
+  return readOr('fetchPlayback', null, async () => {
+  const { data, error } = await (await getSupabase()).from('room_playback').select('*').eq('room_id', roomId).maybeSingle();
   if (error) {
     console.error('fetchPlayback error:', error);
     return null;
   }
   return data ? mapPlayback(data as DbPlayback) : null;
+  });
 }
 
 /** Host only: publish the shared playback state. */
@@ -49,26 +71,35 @@ export async function setPlayback(
   code: string,
   state: { movieId: string; isPlaying: boolean; position: number }
 ): Promise<Result<PlaybackSnapshot>> {
-  const { data, error } = await supabase.rpc('set_playback', {
+  return writeResult(async () => {
+  const { data, error } = await (await getSupabase()).rpc('set_playback', {
     p_code: code,
     p_movie_id: state.movieId,
     p_is_playing: state.isPlaying,
     p_position: Math.max(0, Number.isFinite(state.position) ? state.position : 0),
   });
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyError(error) };
   return { data: mapPlayback(data as DbPlayback) };
+  });
 }
 
-/** Estimates server clock − local clock in ms (null if unreachable). */
-export async function measureClockOffset(samples = 5): Promise<number | null> {
+/**
+ * Estimates server clock − local clock and the round-trip time, in ms
+ * (null if the server could not be reached).
+ */
+export async function measureClockOffset(samples = 5): Promise<{ offsetMs: number; rttMs: number } | null> {
   const results: ClockSample[] = [];
   for (let i = 0; i < samples; i++) {
     const sentAt = Date.now();
-    const { data, error } = await supabase.rpc('server_time');
-    const receivedAt = Date.now();
-    if (!error) results.push({ sentAt, serverMs: Number(data), receivedAt });
+    try {
+      const { data, error } = await (await getSupabase()).rpc('server_time');
+      const receivedAt = Date.now();
+      if (!error) results.push({ sentAt, serverMs: Number(data), receivedAt });
+    } catch {
+      // skip this sample (offline / timeout)
+    }
   }
-  return pickClockOffset(results)?.offsetMs ?? null;
+  return pickClockOffset(results);
 }
 
 // -------------------------------------------------------------------- chat
@@ -100,8 +131,9 @@ export function mapMessage(row: DbMessage): ChatMessage {
 }
 
 /** The latest messages, oldest first. */
-export async function fetchMessages(roomId: string, limit = 100): Promise<ChatMessage[]> {
-  const { data, error } = await supabase
+export function fetchMessages(roomId: string, limit = 100): Promise<ChatMessage[]> {
+  return readOr('fetchMessages', [] as ChatMessage[], async () => {
+  const { data, error } = await (await getSupabase())
     .from('room_messages')
     .select('*')
     .eq('room_id', roomId)
@@ -112,12 +144,15 @@ export async function fetchMessages(roomId: string, limit = 100): Promise<ChatMe
     return [];
   }
   return (data as DbMessage[]).reverse().map(mapMessage);
+  });
 }
 
-export async function sendMessage(code: string, body: string): Promise<Result<ChatMessage>> {
-  const { data, error } = await supabase.rpc('send_message', { p_code: code, p_body: body });
-  if (error) return { error: error.message };
+export function sendMessage(code: string, body: string): Promise<Result<ChatMessage>> {
+  return writeResult(async () => {
+  const { data, error } = await (await getSupabase()).rpc('send_message', { p_code: code, p_body: body });
+  if (error) return { error: friendlyError(error) };
   return { data: mapMessage(data as DbMessage) };
+  });
 }
 
 // ---------------------------------------------------------------- playlist
@@ -129,8 +164,9 @@ interface DbPlaylistItem {
   added_by_name: string;
 }
 
-export async function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<PlaylistItem[]> {
-  const { data, error } = await supabase
+export function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<PlaylistItem[]> {
+  return readOr('fetchPlaylist', [] as PlaylistItem[], async () => {
+  const { data, error } = await (await getSupabase())
     .from('room_playlist_items')
     .select('id, movie_id, position, added_by_name')
     .eq('room_id', roomId)
@@ -154,11 +190,14 @@ export async function fetchPlaylist(roomId: string, catalog: Movie[]): Promise<P
       genre: movie.category,
     }];
   });
+  });
 }
 
-async function simpleRpc(fn: string, args: Record<string, unknown>): Promise<Result> {
-  const { error } = await supabase.rpc(fn, args);
-  return error ? { error: error.message } : {};
+function simpleRpc(fn: string, args: Record<string, unknown>): Promise<Result> {
+  return writeResult(async () => {
+    const { error } = await (await getSupabase()).rpc(fn, args);
+    return error ? { error: friendlyError(error) } : {};
+  });
 }
 
 export const playlistAdd = (code: string, movieId: string) =>
@@ -179,8 +218,9 @@ interface DbPoll {
 }
 
 /** The room's active poll with live counts, or null if there is none. */
-export async function fetchActivePoll(roomId: string, userId: string): Promise<Poll | null> {
-  const { data: poll, error } = await supabase
+export function fetchActivePoll(roomId: string, userId: string): Promise<Poll | null> {
+  return readOr('fetchActivePoll', null, async () => {
+  const { data: poll, error } = await (await getSupabase())
     .from('room_polls')
     .select('id, question, options')
     .eq('room_id', roomId)
@@ -192,7 +232,7 @@ export async function fetchActivePoll(roomId: string, userId: string): Promise<P
   }
   if (!poll) return null;
 
-  const { data: votes, error: votesError } = await supabase
+  const { data: votes, error: votesError } = await (await getSupabase())
     .from('room_poll_votes')
     .select('user_id, option_index')
     .eq('poll_id', (poll as DbPoll).id);
@@ -210,6 +250,7 @@ export async function fetchActivePoll(roomId: string, userId: string): Promise<P
     userVotedOptionId: mine ? String(mine.option_index) : undefined,
     active: true,
   };
+  });
 }
 
 export const createPoll = (code: string, question: string, options: string[]) =>

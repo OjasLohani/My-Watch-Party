@@ -14,7 +14,15 @@ import {
 } from 'lucide-react';
 import type { Movie } from '../../types';
 import type { PlaybackSnapshot } from '../../lib/playbackState';
-import { expectedPosition, decideCorrection, HOST_REPUBLISH_MS } from '../../lib/playbackService';
+import { expectedPosition, decideCorrection, compensatePublishPosition, HOST_REPUBLISH_MS } from '../../lib/playbackService';
+import { RollingStats, type StatsSummary } from '../../lib/syncStats';
+
+declare global {
+  interface Window {
+    /** Live sync measurements of this viewer (see src/lib/syncStats.ts) */
+    watchPartySync?: { latencyMs: StatsSummary | null; driftMs: StatsSummary | null };
+  }
+}
 
 /** Shared-playback wiring for real (Supabase) rooms. */
 export interface PlaybackSyncProps {
@@ -24,6 +32,8 @@ export interface PlaybackSyncProps {
   clockOffsetMs: number;
   /** Host only: publish a new shared state */
   onHostChange: (state: { isPlaying: boolean; position: number }) => void;
+  /** Estimated one-way delay to the server in ms (host compensates for it) */
+  serverDelayMs?: number;
 }
 
 interface VideoPlayerProps {
@@ -82,14 +92,20 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   // The parent passes a new function each render; keep the latest in a
   // ref so timers below are not restarted on every render.
   const onHostChangeRef = useRef(sync?.onHostChange);
+  const serverDelayRef = useRef(sync?.serverDelayMs ?? 0);
   useEffect(() => {
     onHostChangeRef.current = sync?.onHostChange;
+    serverDelayRef.current = sync?.serverDelayMs ?? 0;
   });
 
   /** Browser blocked autoplay: the viewer must click once to join */
   const [needsGesture, setNeedsGesture] = useState(false);
   /** Measured drift shown in the HUD (ms, local − expected) */
   const [measuredDriftMs, setMeasuredDriftMs] = useState<number | null>(null);
+  // Sync quality measurements (viewers only)
+  const [syncStats] = useState(() => ({ latency: new RollingStats(), drift: new RollingStats() }));
+  const [statsTitle, setStatsTitle] = useState('');
+  const lastLatencyVersionRef = useRef(-1);
   const [hint, setHint] = useState<string | null>(null);
   const driftRef = useRef<number | null>(null);
   const bufferingRef = useRef(false);
@@ -142,7 +158,8 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     const video = videoRef.current;
     if (!syncedHostRef.current || !video) return;
     clearTimeout(seekPublishTimerRef.current);
-    onHostChangeRef.current?.({ isPlaying: playing, position: position ?? video.currentTime });
+    const at = position ?? video.currentTime;
+    onHostChangeRef.current?.({ isPlaying: playing, position: compensatePublishPosition(at, playing, serverDelayRef.current) });
   }, []);
 
   const playLocal = useCallback(() => {
@@ -225,6 +242,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
 
     const drift = (video.currentTime - expected) * 1000;
     driftRef.current = Math.round(drift);
+    if (playback.isPlaying) syncStats.drift.add(Math.abs(drift));
     const decision = force && Math.abs(drift) > 100 ? { kind: 'seek' as const } : decideCorrection(drift, playback.isPlaying);
     if (decision.kind === 'seek') {
       video.currentTime = expected;
@@ -234,7 +252,18 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     } else if (video.playbackRate !== 1) {
       video.playbackRate = 1;
     }
-  }, [playback, movie.id, clockOffsetMs]);
+  }, [playback, movie.id, clockOffsetMs, syncStats]);
+
+  // Viewers: measure how long each host change took to arrive here
+  useEffect(() => {
+    if (!isSynced || isHost || !playback) return;
+    if (playback.version <= lastLatencyVersionRef.current) return;
+    const isFirst = lastLatencyVersionRef.current === -1;
+    lastLatencyVersionRef.current = playback.version;
+    if (isFirst) return; // the state found on joining is not a live update
+    const latency = Date.now() + clockOffsetMs - playback.updatedAtMs;
+    if (latency >= 0 && latency < 60_000) syncStats.latency.add(latency);
+  }, [isSynced, isHost, playback, clockOffsetMs, syncStats]);
 
   // Viewers: follow every new shared state immediately, then keep checking.
   useEffect(() => {
@@ -286,9 +315,18 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   // Refresh the drift readout once per second
   useEffect(() => {
     if (!isSynced) return;
-    const timer = setInterval(() => setMeasuredDriftMs(driftRef.current), 1000);
+    const timer = setInterval(() => {
+      setMeasuredDriftMs(driftRef.current);
+      const latency = syncStats.latency.summary();
+      const drift = syncStats.drift.summary();
+      window.watchPartySync = { latencyMs: latency, driftMs: drift };
+      setStatsTitle(
+        (latency ? ` • update delay p50 ${latency.p50} ms / p95 ${latency.p95} ms (${latency.count})` : '') +
+        (drift ? ` • drift p95 ${drift.p95} ms` : '')
+      );
+    }, 1000);
     return () => clearInterval(timer);
-  }, [isSynced]);
+  }, [isSynced, syncStats]);
 
   // Reload the video element when the movie changes
   useEffect(() => {
@@ -577,6 +615,41 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
     }
   };
 
+  /** Keyboard shortcuts while the player has focus */
+  const handlePlayerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Buttons and sliders inside the player handle their own keys
+    const target = e.target as HTMLElement;
+    if (target !== e.currentTarget && (target.tagName === 'BUTTON' || target.tagName === 'INPUT')) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const video = videoRef.current;
+    switch (e.key) {
+      case ' ':
+      case 'k':
+      case 'K':
+        e.preventDefault();
+        togglePlay();
+        break;
+      case 'ArrowLeft':
+      case 'ArrowRight':
+        e.preventDefault();
+        if (seekLocked() || !video) return;
+        commitSeek(
+          Math.min(Math.max(0, video.currentTime + (e.key === 'ArrowRight' ? 5 : -5)), video.duration || Infinity),
+          { debouncePublish: true }
+        );
+        break;
+      case 'm':
+      case 'M':
+        toggleMute();
+        break;
+      case 'f':
+      case 'F':
+        toggleFullscreen();
+        break;
+    }
+  };
+
   const controlsLocked = isSynced && !isHost;
   // Host / demo buttons show what was asked for; guests show what plays
   const showAsPlaying = controlsAreLocal ? wantsPlaying : isPlaying;
@@ -584,16 +657,21 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
   return (
     <div
       ref={containerRef}
+      role="region"
+      aria-label={`Video player: ${movie.title}. Keys: Space play or pause, arrows skip 5 seconds, M mute, F fullscreen`}
+      tabIndex={0}
+      onKeyDown={handlePlayerKeyDown}
+      onFocus={() => setShowControls(true)}
       onMouseEnter={() => setShowControls(true)}
       onMouseLeave={() => setShowControls(false)}
-      className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.12] bg-black cinema-ambient-glow"
+      className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.12] bg-black cinema-ambient-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
     >
       {/* Video Element */}
       <video
         ref={videoRef}
         src={sources[sourceIndex]}
         poster={movie.backdropUrl}
-        preload="metadata"
+        preload="auto"
         onTimeUpdate={handleTimeUpdate}
         onPlay={handlePlay}
         onPlaying={handlePlaying}
@@ -667,7 +745,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
           <button
             type="button"
             onClick={handleDriftClick}
-            title={isSynced ? 'Click to re-sync now' : 'Click to simulate network drift calibration'}
+            title={isSynced ? `Click to re-sync now${statsTitle}` : 'Click to simulate network drift calibration'}
             className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-black/60 px-3 py-1.5 text-[11px] font-mono text-emerald-300 backdrop-blur-md hover:bg-emerald-950/40 transition-colors"
           >
             <span className="relative flex h-1.5 w-1.5">

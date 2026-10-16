@@ -1,5 +1,6 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
 import { ensureSignedIn } from '../lib/auth';
+import { friendlyError } from '../lib/errors';
 import type { Room, User, DbRoom, DbRoomMember } from '../types';
 import { mockRoom, mockMembers } from '../mockData';
 
@@ -36,10 +37,7 @@ export interface CreateRoomInput {
 type RoomResult = { room: Room; error?: undefined } | { room: null; error: string };
 
 function errorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
-    return err.message;
-  }
-  return fallback;
+  return friendlyError(err, fallback);
 }
 
 function mapDbRoomToRoom(data: DbRoom): Room {
@@ -79,7 +77,7 @@ export async function createRoom(input: CreateRoomInput): Promise<RoomResult> {
 
   try {
     await ensureSignedIn();
-    const { data, error } = await supabase.rpc('create_room', {
+    const { data, error } = await (await getSupabase()).rpc('create_room', {
       p_name: input.name,
       p_movie_id: input.movieId,
       p_is_private: input.isPrivate,
@@ -112,7 +110,7 @@ export async function joinRoom(code: string, user: User): Promise<RoomResult> {
 
   try {
     await ensureSignedIn();
-    const { data, error } = await supabase.rpc('join_room', {
+    const { data, error } = await (await getSupabase()).rpc('join_room', {
       p_code: cleanCode,
       p_display_name: user.name,
       p_avatar: user.avatar,
@@ -140,7 +138,7 @@ export async function getRoomMembers(roomId: string, currentUserId: string): Pro
   }
 
   try {
-    const { data, error } = await supabase
+    const { data, error } = await (await getSupabase())
       .from('room_members')
       .select('*')
       .eq('room_id', roomId)
@@ -163,19 +161,28 @@ export async function getRoomMembers(roomId: string, currentUserId: string): Pro
   }
 }
 
+/** Calls a database function; never throws (errors come back as text) */
+async function callRpc(fn: string, args: Record<string, unknown>): Promise<{ error?: string }> {
+  try {
+    const { error } = await (await getSupabase()).rpc(fn, args);
+    if (error) {
+      console.error(`${fn} error:`, error);
+      return { error: friendlyError(error) };
+    }
+    return {};
+  } catch (err: unknown) {
+    console.error(`${fn} error:`, err);
+    return { error: friendlyError(err) };
+  }
+}
+
 /**
  * Removes the current user from a room. If they were host, the server
  * hands host to the longest-present remaining member.
  */
 export async function leaveRoom(code: string): Promise<{ error?: string }> {
   if (!isSupabaseConfigured()) return {};
-
-  const { error } = await supabase.rpc('leave_room', { p_code: code });
-  if (error) {
-    console.error('leaveRoom error:', error);
-    return { error: error.message };
-  }
-  return {};
+  return callRpc('leave_room', { p_code: code });
 }
 
 /**
@@ -189,15 +196,8 @@ export async function transferRoomHost(
   if (!isSupabaseConfigured()) {
     return { success: true };
   }
-
-  const { error } = await supabase.rpc('transfer_host', {
-    p_code: code,
-    p_new_host_id: newHostUserId,
-  });
-  if (error) {
-    return { success: false, error: error.message };
-  }
-  return { success: true };
+  const { error } = await callRpc('transfer_host', { p_code: code, p_new_host_id: newHostUserId });
+  return error ? { success: false, error } : { success: true };
 }
 
 /**
@@ -205,13 +205,20 @@ export async function transferRoomHost(
  */
 export async function setRoomMovie(code: string, movieId: string): Promise<{ error?: string }> {
   if (!isSupabaseConfigured()) return {};
+  return callRpc('set_room_movie', { p_code: code, p_movie_id: movieId });
+}
 
-  const { error } = await supabase.rpc('set_room_movie', {
-    p_code: code,
-    p_movie_id: movieId,
-  });
-  if (error) {
-    return { error: error.message };
-  }
-  return {};
+/** "Still here" signal; the server records the time (Stage 3 migration) */
+export async function touchRoom(code: string): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured()) return {};
+  return callRpc('touch_room', { p_code: code });
+}
+
+/**
+ * Take over as host. The server only allows it when the current host has
+ * not been seen for 3 minutes (or has left).
+ */
+export async function claimHost(code: string): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured()) return {};
+  return callRpc('claim_host', { p_code: code });
 }

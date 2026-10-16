@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
@@ -14,21 +14,25 @@ export const isSupabaseConfigured = (): boolean => {
   );
 };
 
-// Official Supabase JavaScript client
-// Only anon public key is used in frontend code, never the service role key
-export const supabase = createClient(
-  isSupabaseConfigured() ? supabaseUrl : 'https://placeholder.supabase.co',
-  isSupabaseConfigured() ? supabaseAnonKey : 'placeholder-key',
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-    },
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
-      },
-    },
-  }
-);
+let clientPromise: Promise<SupabaseClient> | null = null;
 
+/**
+ * The Supabase client. The library (~55 kB compressed) is downloaded on
+ * first use instead of with the first page, so the homepage shows sooner.
+ * Every call shares one client instance.
+ */
+export function getSupabase(): Promise<SupabaseClient> {
+  clientPromise ??= import('./supabaseClient').then(
+    ({ createSupabaseClient }) =>
+      createSupabaseClient(
+        isSupabaseConfigured() ? supabaseUrl : 'https://placeholder.supabase.co',
+        isSupabaseConfigured() ? supabaseAnonKey : 'placeholder-key'
+      ),
+    (err: unknown) => {
+      // Download failed (e.g. offline): let the next call try again
+      clientPromise = null;
+      throw err;
+    }
+  );
+  return clientPromise;
+}

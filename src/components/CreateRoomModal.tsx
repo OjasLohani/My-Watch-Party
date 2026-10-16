@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, Lock, Globe, Film, Loader2 } from 'lucide-react';
 import type { Movie } from '../types';
 
@@ -24,6 +24,16 @@ export function CreateRoomModal({
   const [hostName, setHostName] = useState('Alex Rivera');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Escape closes the dialog
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 

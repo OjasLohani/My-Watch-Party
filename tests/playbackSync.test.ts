@@ -6,6 +6,8 @@ import {
   decideCorrection,
   pickClockOffset,
   isNewerSnapshot,
+  compensatePublishPosition,
+  MAX_PUBLISH_LEAD_MS,
   DRIFT_IGNORE_MS,
   DRIFT_SEEK_MS,
   PAUSED_SEEK_MS,
@@ -97,6 +99,28 @@ test('pickClockOffset ignores broken samples', () => {
   assert.equal(pickClockOffset([]), null);
   assert.equal(pickClockOffset([{ sentAt: 10, serverMs: 5, receivedAt: 5 }]), null, 'negative round trip');
   assert.equal(pickClockOffset([{ sentAt: 0, serverMs: Number.NaN, receivedAt: 10 }]), null);
+});
+
+test('host publish is moved forward by the one-way delay only while playing', () => {
+  assert.equal(compensatePublishPosition(10, true, 120), 10.12);
+  assert.equal(compensatePublishPosition(10, false, 120), 10, 'paused: no compensation');
+  assert.equal(compensatePublishPosition(10, true, 0), 10);
+  assert.equal(compensatePublishPosition(10, true, Number.NaN), 10);
+  assert.equal(compensatePublishPosition(10, true, 99999), 10 + MAX_PUBLISH_LEAD_MS / 1000, 'outliers are capped');
+});
+
+test('compensated publish puts viewers level with the host', () => {
+  // Host at 30 s clicks play; the change reaches the server 150 ms later.
+  const oneWay = 150;
+  const clickAt = 1_000_000;
+  const snapshot = {
+    movieId: 'm', isPlaying: true, rate: 1, version: 1, updatedBy: 'h',
+    position: compensatePublishPosition(30, true, oneWay),
+    updatedAtMs: clickAt + oneWay,
+  };
+  const later = clickAt + 5_000;
+  const hostPosition = 30 + 5; // host played 5 s since the click
+  assert.ok(Math.abs(expectedPosition(snapshot, later) - hostPosition) < 1e-9);
 });
 
 test('isNewerSnapshot: version wins, duplicates are ignored', () => {

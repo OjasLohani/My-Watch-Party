@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { getSupabase, isSupabaseConfigured } from '../lib/supabase';
 import { isAllowedReaction } from '../lib/reactions';
 import type { DbMessage, DbPlayback } from '../services/roomFeaturesService';
 import type { Room, User, DbRoom } from '../types';
@@ -28,11 +29,27 @@ export interface RoomRealtimeHandlers {
 // re-subscribe (React StrictMode, leave + rejoin) must wait for it.
 const pendingRemovals = new Map<string, Promise<unknown>>();
 
-async function waitForTopicToClose(topic: string) {
+async function waitForTopicToClose(supabase: SupabaseClient, topic: string) {
   await pendingRemovals.get(topic);
   const leftover = supabase.getChannels().find((c) => c.topic === `realtime:${topic}`);
   if (leftover) await supabase.removeChannel(leftover).catch(() => {});
 }
+
+function removeChannelTracked(supabase: SupabaseClient, topic: string, channel: RealtimeChannel) {
+  const removal = supabase.removeChannel(channel).catch(() => {});
+  pendingRemovals.set(topic, removal);
+  void removal.then(() => {
+    if (pendingRemovals.get(topic) === removal) pendingRemovals.delete(topic);
+  });
+  return removal;
+}
+
+/** If a failed channel has not recovered by itself within this time, rebuild it */
+const RECOVERY_TIMEOUT_MS = 15_000;
+/** Rebuild attempts wait 2 s, 4 s, 8 s … up to this */
+const MAX_BACKOFF_MS = 30_000;
+/** Tab refocus / network-back reloads at most this often (saves requests) */
+const MIN_RESYNC_INTERVAL_MS = 5_000;
 
 interface UseRoomRealtimeProps {
   room: Room | null;
@@ -82,18 +99,45 @@ export function useRoomRealtime({ room, currentUser, handlers }: UseRoomRealtime
     const reloadMembers = debounced(() => handlersRef.current.onMembersChanged());
     const reloadPlaylist = debounced(() => handlersRef.current.onPlaylistChanged());
     const reloadPolls = debounced(() => handlersRef.current.onPollsChanged());
-    const resync = () => {
-      if (!disposed) handlersRef.current.onResync();
+    let lastResyncAt = 0;
+    /** Reload everything; `force` skips the rate limit (after reconnecting) */
+    const resync = (force = false) => {
+      if (disposed) return;
+      const now = Date.now();
+      if (!force && now - lastResyncAt < MIN_RESYNC_INTERVAL_MS) return;
+      lastResyncAt = now;
+      handlersRef.current.onResync();
     };
     const filter = `room_id=eq.${roomId}`;
     const topic = `room:${roomId}`;
     let channel: RealtimeChannel | null = null;
+    let client: SupabaseClient | null = null;
+    let attempt = 0;
+    let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    /**
+     * Throws the channel away and builds a new one after a back-off.
+     * Covers what supabase-js does not retry by itself, e.g. a channel
+     * closed by the server when the session token expired.
+     */
+    const rebuild = () => {
+      if (disposed) return;
+      clearTimeout(recoveryTimer);
+      const old = channel;
+      channel = null;
+      channelRef.current = null;
+      if (old && client) removeChannelTracked(client, topic, old);
+      const delay = Math.min(MAX_BACKOFF_MS, 2_000 * 2 ** attempt);
+      attempt += 1;
+      recoveryTimer = setTimeout(() => void start(), delay);
+    };
 
     const start = async () => {
-      await waitForTopicToClose(topic);
+      client = await getSupabase();
+      await waitForTopicToClose(client, topic);
       if (disposed) return;
 
-      const ch = supabase.channel(topic, {
+      const ch = client.channel(topic, {
         config: {
           private: true,
           broadcast: { self: false },
@@ -135,42 +179,59 @@ export function useRoomRealtime({ room, currentUser, handlers }: UseRoomRealtime
         handlersRef.current.onOnlineUsersChange(new Set(Object.keys(ch.presenceState())));
       })
       .subscribe(async (state, err) => {
-        if (disposed) return;
+        if (disposed || ch !== channel) return; // ignore a replaced channel
         if (state === 'SUBSCRIBED') {
+          attempt = 0;
+          clearTimeout(recoveryTimer);
           setStatus('live');
           await ch.track({ name: userNameRef.current, online_at: new Date().toISOString() });
           // Catch up on anything missed while (re)connecting
-          resync();
+          resync(true);
         } else if (state === 'CHANNEL_ERROR' || state === 'TIMED_OUT') {
-          // supabase-js keeps retrying the join automatically
+          // supabase-js retries the join by itself; rebuild only if that
+          // has not worked after a while
           setStatus('reconnecting');
           if (err) console.warn('Room realtime channel:', err.message);
+          clearTimeout(recoveryTimer);
+          recoveryTimer = setTimeout(rebuild, RECOVERY_TIMEOUT_MS);
+        } else if (state === 'CLOSED') {
+          // Closed without us asking (e.g. expired session): rebuild
+          setStatus('reconnecting');
+          rebuild();
         }
       });
 
     void start();
 
     // Initial load right away, without waiting for the channel
-    resync();
+    resync(true);
 
     // Coming back online or to the tab: reload in case events were missed
+    const onOnline = () => resync();
     const onVisible = () => {
       if (document.visibilityState === 'visible') resync();
     };
-    window.addEventListener('online', resync);
+    // Closing the tab: tell the others right away instead of after the
+    // presence timeout (best effort; the page is going away)
+    const onPageHide = () => {
+      void channel?.untrack();
+    };
+    window.addEventListener('online', onOnline);
     document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pagehide', onPageHide);
 
     return () => {
       disposed = true;
-      window.removeEventListener('online', resync);
+      clearTimeout(recoveryTimer);
+      window.removeEventListener('online', onOnline);
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pagehide', onPageHide);
       channelRef.current = null;
-      if (channel) {
-        const removal = supabase.removeChannel(channel).catch(() => {});
-        pendingRemovals.set(topic, removal);
-        void removal.then(() => {
-          if (pendingRemovals.get(topic) === removal) pendingRemovals.delete(topic);
-        });
+      const old = channel;
+      channel = null;
+      if (old) {
+        // `client` is set before any channel exists
+        if (client) removeChannelTracked(client, topic, old);
       }
     };
   }, [roomId, userId]);

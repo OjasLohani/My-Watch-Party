@@ -18,11 +18,11 @@ for (const m of migrations.matchAll(/create or replace function public\.(\w+)\((
 const sources = ['src/services/roomService.ts', 'src/services/roomFeaturesService.ts']
   .map((f) => readFileSync(new URL(f, root), 'utf8'))
   .join('\n');
-const calls = [...sources.matchAll(/(?:\.rpc|simpleRpc)\(\s*'(\w+)'\s*(?:,\s*\{([^}]*)\})?\s*\)/g)]
+const calls = [...sources.matchAll(/(?:\.rpc|simpleRpc|callRpc)\(\s*'(\w+)'\s*(?:,\s*\{([^}]*)\})?\s*\)/g)]
   .map((m) => ({ name: m[1], params: [...(m[2] ?? '').matchAll(/\b(p_\w+)\s*:/g)].map((x) => x[1]).sort() }));
 
 test('frontend RPC calls match SQL function signatures', () => {
-  assert.ok(calls.length >= 14, `found ${calls.length} calls`);
+  assert.ok(calls.length >= 16, `found ${calls.length} calls`);
   for (const call of calls) {
     assert.ok(sqlFunctions.has(call.name), `missing SQL function ${call.name}`);
     assert.deepEqual(call.params, sqlFunctions.get(call.name), `parameters of ${call.name}`);

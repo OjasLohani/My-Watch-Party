@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { getSupabase } from './supabase';
 
 let pendingSignIn: Promise<string> | null = null;
 
@@ -13,11 +13,11 @@ let pendingSignIn: Promise<string> | null = null;
 export function ensureSignedIn(): Promise<string> {
   if (!pendingSignIn) {
     pendingSignIn = (async () => {
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const { data: sessionData, error: sessionError } = await (await getSupabase()).auth.getSession();
       if (sessionError) throw new Error(sessionError.message);
       if (sessionData.session?.user) return sessionData.session.user.id;
 
-      const { data, error } = await supabase.auth.signInAnonymously();
+      const { data, error } = await (await getSupabase()).auth.signInAnonymously();
       if (error || !data.user) {
         const message = error?.message ?? 'Unknown sign-in error.';
         throw new Error(

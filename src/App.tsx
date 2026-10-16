@@ -1,12 +1,29 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { Loader2 } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { DiscoverHero } from './components/DiscoverHero';
 import { MovieGrid } from './components/MovieGrid';
-import { WatchRoomScreen } from './components/WatchRoom/WatchRoomScreen';
-import { CreateRoomModal } from './components/CreateRoomModal';
-import { JoinRoomModal } from './components/JoinRoomModal';
 import { ToastContainer } from './components/ToastContainer';
-import { StageOverview } from './components/StageOverview';
+
+// Loaded on demand: not needed for the first view of the homepage
+const WatchRoomScreen = lazy(() =>
+  import('./components/WatchRoom/WatchRoomScreen').then((m) => ({ default: m.WatchRoomScreen })));
+const CreateRoomModal = lazy(() =>
+  import('./components/CreateRoomModal').then((m) => ({ default: m.CreateRoomModal })));
+const JoinRoomModal = lazy(() =>
+  import('./components/JoinRoomModal').then((m) => ({ default: m.JoinRoomModal })));
+const StageOverview = lazy(() =>
+  import('./components/StageOverview').then((m) => ({ default: m.StageOverview })));
+
+/** Shown while a lazily loaded part of the app downloads */
+function SectionLoader({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-[200px] items-center justify-center gap-2 text-xs text-slate-400" role="status">
+      <Loader2 className="h-4 w-4 animate-spin text-violet-400" />
+      <span>{label}</span>
+    </div>
+  );
+}
 import { isSupabaseConfigured } from './lib/supabase';
 import { getOrCreateSessionUser, saveSessionUser } from './lib/session';
 import { ensureSignedIn } from './lib/auth';
@@ -17,7 +34,9 @@ import {
   joinRoom as apiJoinRoom,
   getRoomMembers as apiGetRoomMembers,
   leaveRoom as apiLeaveRoom,
-  transferRoomHost as apiTransferRoomHost
+  transferRoomHost as apiTransferRoomHost,
+  touchRoom as apiTouchRoom,
+  claimHost as apiClaimHost
 } from './services/roomService';
 import {
   closePoll as apiClosePoll,
@@ -58,6 +77,12 @@ import type {
 
 /** Minimum gap between two reactions from this browser */
 const REACTION_COOLDOWN_MS = 250;
+/** How long a server clock offset measurement is reused */
+const CLOCK_REMEASURE_MS = 120_000;
+/** "Still here" signal interval (the server allows a takeover after 3 min of silence) */
+const HEARTBEAT_MS = 30_000;
+/** Guests are offered to take over once the host has been offline this long */
+const HOST_AWAY_MS = 60_000;
 
 export default function App() {
   // Navigation View State
@@ -78,10 +103,16 @@ export default function App() {
   // Shared state for real (Supabase) rooms
   const [playback, setPlayback] = useState<PlaybackSnapshot | null>(null);
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
+  // Estimated one-way delay to the server (half the measured round trip)
+  const [serverDelayMs, setServerDelayMs] = useState(0);
   const [onlineIds, setOnlineIds] = useState<Set<string> | null>(null);
+  // When the host was last seen online, and a clock that ticks every 15 s
+  const [hostSeenAt, setHostSeenAt] = useState(() => Date.now());
+  const [presenceTick, setPresenceTick] = useState(() => Date.now());
   const isRealRoom = !activeRoom.isMockData;
   const activeRoomIdRef = useRef(activeRoom.id);
   const lastReactionAtRef = useRef(0);
+  const clockMeasuredRef = useRef<{ roomId: string | null; at: number }>({ roomId: null, at: 0 });
   useEffect(() => {
     activeRoomIdRef.current = activeRoom.id;
   }, [activeRoom.id]);
@@ -151,6 +182,7 @@ export default function App() {
   /** Clears room data before entering a real room (it is loaded from the server) */
   const resetRoomData = (mode: 'real' | 'demo') => {
     setPlayback(null);
+    setHostSeenAt(Date.now());
     setOnlineIds(null);
     if (mode === 'real') {
       setChatMessages([]);
@@ -184,8 +216,16 @@ export default function App() {
     setPlaylist(items);
     setPoll(activePoll);
 
-    const offset = await measureClockOffset();
-    if (offset !== null && activeRoomIdRef.current === roomId) setClockOffsetMs(offset);
+    // Clocks drift slowly: re-measure the server clock offset (5 round
+    // trips) only for a new room or every couple of minutes.
+    const lastMeasure = clockMeasuredRef.current;
+    if (lastMeasure.roomId === roomId && Date.now() - lastMeasure.at < CLOCK_REMEASURE_MS) return;
+    const clock = await measureClockOffset();
+    if (clock !== null && activeRoomIdRef.current === roomId) {
+      clockMeasuredRef.current = { roomId, at: Date.now() };
+      setClockOffsetMs(clock.offsetMs);
+      setServerDelayMs(clock.rttMs / 2);
+    }
   }, [activeRoom.id, activeRoom.isMockData, currentUser.id, applyPlayback]);
 
   // Join Room by Code (Used by modal and invite URLs).
@@ -282,10 +322,14 @@ export default function App() {
           if (movie) setCurrentMovie(movie);
         }
         if (updatedRoom.hostId) {
+          setHostSeenAt(Date.now());
           setCurrentUser((prev) => ({ ...prev, isHost: prev.id === updatedRoom.hostId }));
         }
       },
-      onOnlineUsersChange: setOnlineIds,
+      onOnlineUsersChange: (ids) => {
+        setOnlineIds(ids);
+        if (ids.has(activeRoom.hostId)) setHostSeenAt(Date.now());
+      },
       onPlaybackRow: (row) => applyPlayback(mapPlayback(row)),
       onMessageRow: (row) => appendMessage(mapMessage(row)),
       onPlaylistChanged: () => {
@@ -588,6 +632,47 @@ export default function App() {
     return null;
   };
 
+  // --- Absent host ---
+
+  // Members tell the server "still here" so an absent host can be detected
+  useEffect(() => {
+    if (!isRealRoom) return;
+    const code = activeRoom.code;
+    const beat = () => {
+      void apiTouchRoom(code);
+    };
+    beat();
+    const timer = setInterval(beat, HEARTBEAT_MS);
+    return () => clearInterval(timer);
+  }, [isRealRoom, activeRoom.code]);
+
+  useEffect(() => {
+    if (!isRealRoom) return;
+    const timer = setInterval(() => setPresenceTick(Date.now()), 15_000);
+    return () => clearInterval(timer);
+  }, [isRealRoom]);
+
+  const hostIsAway =
+    isRealRoom &&
+    !currentUser.isHost &&
+    realtimeStatus === 'live' &&
+    onlineIds !== null &&
+    !onlineIds.has(activeRoom.hostId) &&
+    presenceTick - hostSeenAt > HOST_AWAY_MS;
+  const hostName = members.find((m) => m.id === activeRoom.hostId)?.name ?? 'The host';
+
+  const handleClaimHost = async () => {
+    const { error } = await apiClaimHost(activeRoom.code);
+    if (error) {
+      addToast(error, 'warning');
+      return;
+    }
+    setActiveRoom((prev) => ({ ...prev, hostId: currentUser.id }));
+    setCurrentUser((prev) => ({ ...prev, isHost: true }));
+    setMembers((prev) => prev.map((m) => ({ ...m, isHost: m.id === currentUser.id })));
+    addToast('You are now the host.', 'success');
+  };
+
   // Transfer Host Role
   const handleTransferHost = async (targetUserId: string) => {
     const target = members.find((m) => m.id === targetUserId);
@@ -723,6 +808,7 @@ export default function App() {
                 </button>
                 {showArchBenchmark && (
                   <div className="mt-4 pt-4 border-t border-white/[0.06] text-left">
+                    <Suspense fallback={<SectionLoader label="Loading checklist…" />}>
                     <StageOverview
                       room={activeRoom}
                       currentUser={currentUser}
@@ -732,6 +818,7 @@ export default function App() {
                       onToggleHostRole={handleToggleHostRole}
                       canToggleHostRole={canToggleHostRole}
                     />
+                    </Suspense>
                   </div>
                 )}
               </div>
@@ -739,6 +826,7 @@ export default function App() {
           </div>
         ) : (
           /* Watch Room View Screen */
+          <Suspense fallback={<SectionLoader label="Opening the screening room…" />}>
           <WatchRoomScreen
             room={activeRoom}
             currentMovie={displayedMovie}
@@ -767,29 +855,37 @@ export default function App() {
             playbackSync={isRealRoom ? {
               playback,
               clockOffsetMs,
+              serverDelayMs,
               onHostChange: (state) => void handleHostPlaybackChange(state),
             } : undefined}
             connectionStatus={realtimeStatus}
+            hostAway={hostIsAway ? { hostName } : null}
+            onClaimHost={() => void handleClaimHost()}
           />
+          </Suspense>
         )}
       </main>
 
-      {/* Modals (Create Room mounts fresh on each open so the preselected movie applies) */}
-      {isCreateModalOpen && (
-        <CreateRoomModal
-          isOpen={isCreateModalOpen}
-          onClose={() => setIsCreateModalOpen(false)}
-          movies={mockMovies}
-          selectedMovieId={selectedMovieForCreate}
-          onCreateRoom={handleCreateRoom}
-        />
-      )}
+      {/* Modals (mounted fresh on each open, so forms and the preselected movie reset) */}
+      <Suspense fallback={null}>
+        {isCreateModalOpen && (
+          <CreateRoomModal
+            isOpen={isCreateModalOpen}
+            onClose={() => setIsCreateModalOpen(false)}
+            movies={mockMovies}
+            selectedMovieId={selectedMovieForCreate}
+            onCreateRoom={handleCreateRoom}
+          />
+        )}
 
-      <JoinRoomModal
-        isOpen={isJoinModalOpen}
-        onClose={() => setIsJoinModalOpen(false)}
-        onJoinRoom={handleJoinRoom}
-      />
+        {isJoinModalOpen && (
+          <JoinRoomModal
+            isOpen={isJoinModalOpen}
+            onClose={() => setIsJoinModalOpen(false)}
+            onJoinRoom={handleJoinRoom}
+          />
+        )}
+      </Suspense>
 
       {/* Footer */}
       <footer className="border-t border-white/[0.06] bg-[#06070B] py-6 text-xs text-slate-400">

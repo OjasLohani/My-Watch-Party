@@ -15,6 +15,18 @@ export const STAGE1 = readMigration('20261016120000_secure_rooms_and_membership.
 export const STAGE1_ROLLBACK = readMigration('20261016120000_secure_rooms_and_membership.rollback.sql');
 export const STAGE2 = readMigration('20261017120000_stage2_shared_room_features.sql');
 export const STAGE2_ROLLBACK = readMigration('20261017120000_stage2_shared_room_features.rollback.sql');
+export const STAGE3 = readMigration('20261018120000_stage3_host_takeover.sql');
+export const STAGE3_ROLLBACK = readMigration('20261018120000_stage3_host_takeover.rollback.sql');
+
+/** A database with every migration applied, ready for app-level tests */
+export async function createMigratedDb() {
+  const db = await createDb();
+  for (const sql of [STAGE1, STAGE2, STAGE3]) {
+    const result = await migrate(db, sql);
+    if (!result.ok) throw new Error(result.error);
+  }
+  return db;
+}
 
 export const USERS = {
   A: 'aaaaaaaa-0000-4000-8000-000000000001',

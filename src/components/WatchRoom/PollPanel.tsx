@@ -197,7 +197,7 @@ export function PollPanel({ poll, isHost, onVoteCast, onCreatePoll, onClosePoll 
       </div>
 
       {/* Options List */}
-      <div className="mt-4 flex-1 space-y-2.5 overflow-y-auto max-h-[360px]">
+      <div className="mt-4 flex-1 space-y-2.5 overflow-y-auto max-h-[360px]" role="radiogroup" aria-label={poll.question}>
         {poll.options.map((opt) => {
           const isVotedByMe = poll.userVotedOptionId === opt.id;
           const isLeader = opt.votes === maxVotes && opt.votes > 0;
@@ -207,6 +207,17 @@ export function PollPanel({ poll, isHost, onVoteCast, onCreatePoll, onClosePoll 
             <div
               key={opt.id}
               onClick={() => !poll.userVotedOptionId && setSelectedOptionId(opt.id)}
+              onKeyDown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ') && !poll.userVotedOptionId) {
+                  e.preventDefault();
+                  setSelectedOptionId(opt.id);
+                }
+              }}
+              role="radio"
+              aria-checked={isVotedByMe || selectedOptionId === opt.id}
+              aria-disabled={Boolean(poll.userVotedOptionId)}
+              aria-label={`${opt.title}: ${opt.votes} votes, ${percentage}%`}
+              tabIndex={poll.userVotedOptionId ? -1 : 0}
               className={`relative overflow-hidden rounded-xl border p-3 transition-all ${
                 isVotedByMe
                   ? 'border-violet-500/60 bg-violet-950/30'

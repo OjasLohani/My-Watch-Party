@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, Key, Loader2, ArrowRight } from 'lucide-react';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { ROOM_CODE_PATTERN } from '../services/roomService';
@@ -14,6 +14,16 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
   const [code, setCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // Escape closes the dialog
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 

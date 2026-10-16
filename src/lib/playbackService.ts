@@ -71,6 +71,21 @@ export function pickClockOffset(samples: ClockSample[]): { offsetMs: number; rtt
   return best;
 }
 
+/** Largest one-way delay we compensate for (anything above is likely an outlier) */
+export const MAX_PUBLISH_LEAD_MS = 1000;
+
+/**
+ * The server stamps a host change when it ARRIVES, not when the host
+ * clicked. While playing, the host's video moves on during that trip, so
+ * the published position is moved forward by the estimated one-way delay
+ * (half the measured round trip). Without this, every viewer would sit
+ * that far behind the host.
+ */
+export function compensatePublishPosition(position: number, isPlaying: boolean, oneWayDelayMs: number): number {
+  if (!isPlaying || !Number.isFinite(oneWayDelayMs) || oneWayDelayMs <= 0) return position;
+  return position + Math.min(oneWayDelayMs, MAX_PUBLISH_LEAD_MS) / 1000;
+}
+
 /** True when `next` should replace `current` (newer version wins). */
 export function isNewerSnapshot(current: PlaybackSnapshot | null, next: PlaybackSnapshot): boolean {
   if (!current) return true;
