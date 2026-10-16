@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { 
   ArrowLeft, 
   Copy, 
   Check, 
   MessageSquare, 
   ListMusic, 
-  Vote 
+  Vote,
+  LogOut
 } from 'lucide-react';
 import type { Room, User, Movie, PlaylistItem, ChatMessage, Poll, FloatingReaction } from '../../types';
 import type { RealtimeStatus } from '../../hooks/useRoomRealtime';
@@ -15,6 +16,7 @@ import { PlaylistPanel } from './PlaylistPanel';
 import { PollPanel } from './PollPanel';
 import { ParticipantsList } from './ParticipantsList';
 import { FloatingReactions } from './FloatingReactions';
+import { LeaveRoomDialog } from './LeaveRoomDialog';
 
 interface WatchRoomScreenProps {
   room: Room;
@@ -25,7 +27,8 @@ interface WatchRoomScreenProps {
   chatMessages: ChatMessage[];
   poll: Poll | null;
   driftMs: number;
-  onLeaveRoom: () => void;
+  /** Leaves the room; resolves to an error message, or null when done */
+  onLeaveRoom: () => Promise<string | null>;
   onSelectMovieFromPlaylist: (item: PlaylistItem) => void;
   onRemoveFromPlaylist: (item: PlaylistItem) => void;
   onMovePlaylistItem: (item: PlaylistItem, direction: -1 | 1) => void;
@@ -76,6 +79,31 @@ export function WatchRoomScreen({
   onClaimHost,
 }: WatchRoomScreenProps) {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
+
+  // Leave confirmation. The ref blocks a second request at once (state
+  // updates only on the next render, so a quick double click could
+  // otherwise send two).
+  const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState('');
+  const leavingRef = useRef(false);
+
+  const openLeaveDialog = () => {
+    setLeaveError('');
+    setIsLeaveDialogOpen(true);
+  };
+
+  const confirmLeave = async () => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
+    setIsLeaving(true);
+    setLeaveError('');
+    const error = await onLeaveRoom();
+    leavingRef.current = false;
+    setIsLeaving(false);
+    // On success this screen is replaced by the home screen
+    if (error) setLeaveError(error);
+  };
   const [copiedLink, setCopiedLink] = useState(false);
 
   // Everyone's current name, so chat and the queue show renamed people correctly
@@ -106,8 +134,9 @@ export function WatchRoomScreen({
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
-            onClick={onLeaveRoom}
-            aria-label="Leave the room and go back to the library"
+            onClick={onOpenDiscover}
+            aria-label="Browse the library (you stay in the room)"
+            title="Browse the library. You stay in the room; use Leave Room to leave."
             className="flex shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -145,7 +174,15 @@ export function WatchRoomScreen({
         </div>
 
         {/* Room Code & Copy Invite Link */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={openLeaveDialog}
+            className="flex items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-950/20 px-3.5 py-2 text-xs font-semibold text-red-200 hover:bg-red-900/30 transition-colors"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span>Leave Room</span>
+          </button>
           <button
             type="button"
             onClick={handleCopyInviteLink}
@@ -291,6 +328,16 @@ export function WatchRoomScreen({
           </div>
         </div>
       </div>
+
+      {isLeaveDialogOpen && (
+        <LeaveRoomDialog
+          isHost={currentUser.isHost}
+          isLeaving={isLeaving}
+          error={leaveError}
+          onCancel={() => setIsLeaveDialogOpen(false)}
+          onConfirm={() => void confirmLeave()}
+        />
+      )}
     </div>
   );
 }

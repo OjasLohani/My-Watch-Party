@@ -782,17 +782,28 @@ export default function App() {
   };
 
   // Leave room handler
-  const handleLeaveRoom = async () => {
-    if (!activeRoom.isMockData) {
-      const { error } = await apiLeaveRoom(activeRoom.code);
-      if (error) {
-        addToast(error, 'warning');
+  // Leaving: only navigates away once the server confirmed. Switching
+  // back to the local demo room switches off everything tied to the real
+  // room: the Realtime channel (and presence), lease renewals, the
+  // host-transfer checks, and the video player.
+  // Returns an error message (still in the room), or null when done.
+  const leavingRef = useRef(false);
+  const handleLeaveRoom = async (): Promise<string | null> => {
+    if (leavingRef.current) return null; // a leave is already in progress
+    leavingRef.current = true;
+    try {
+      if (!activeRoom.isMockData) {
+        // Removes our membership and lease; if we were host, the server
+        // hands hosting to a connected member immediately.
+        const { error } = await apiLeaveRoom(activeRoom.code);
+        if (error) return error;
+        resetRoomData('demo');
+        setActiveRoom(mockRoom);
+        setMembers([{ ...currentUser, isHost: false }]);
+        setCurrentUser((prev) => ({ ...prev, isHost: false }));
       }
-      // Back to the local demo room so nothing acts on the room we left
-      resetRoomData('demo');
-      setActiveRoom(mockRoom);
-      setMembers([{ ...currentUser, isHost: false }]);
-      setCurrentUser((prev) => ({ ...prev, isHost: false }));
+    } finally {
+      leavingRef.current = false;
     }
 
     // Clear room query param from URL
@@ -802,6 +813,7 @@ export default function App() {
 
     setCurrentView('discover');
     addToast('Left screening room.', 'info');
+    return null;
   };
 
   // Simulate network jitter (demo rooms; real rooms measure real drift)

@@ -128,6 +128,7 @@ video.
 
 | Situation | What happens |
 |---|---|
+| Leave Room fails (network / server) | The confirmation dialog shows the error and you stay in the room; trying again is safe (leaving twice is harmless) |
 | Slow / dropped requests | Every Supabase request times out after 15 s; reads fall back to the last data, writes show a readable message ("Network problem…") |
 | Supabase library fails to download | Retried on the next action |
 | Realtime connection drops | supabase-js retries; if not recovered in 15 s, or the server closed the channel (e.g. expired session), the app rebuilds it with back-off (2 s → 30 s) and shows "Reconnecting…" |
