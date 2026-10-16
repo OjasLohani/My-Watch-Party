@@ -113,6 +113,17 @@ begin
   if to_regclass('auth.users') is null or not has_table_privilege('auth.users', 'select') then
     raise exception 'Pre-flight: role % cannot read auth.users', current_user;
   end if;
+  -- wp_is_auth_user() runs as this role; RLS on auth.users must not hide rows.
+  if exists (
+    select 1 from pg_class c
+    where c.oid = 'auth.users'::regclass and c.relrowsecurity
+      and not (
+        (select r.rolbypassrls or r.rolsuper from pg_roles r where r.rolname = current_user)
+        or (pg_has_role(current_user, c.relowner, 'USAGE') and not c.relforcerowsecurity)
+      )
+  ) then
+    raise exception 'Pre-flight: RLS on auth.users would hide users from role %', current_user;
+  end if;
 
   -- 0g. Do not overwrite functions with our names that someone else wrote.
   select string_agg(p.proname, ', ') into problem
