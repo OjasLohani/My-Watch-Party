@@ -8,6 +8,8 @@
 
 begin;
 
+drop policy if exists "Watch party room channels are closed to anon" on realtime.messages;
+drop policy if exists "Watch party room channels are members only" on realtime.messages;
 drop policy if exists "Watch party members can join room channels" on realtime.messages;
 drop policy if exists "Watch party members can send on room channels" on realtime.messages;
 

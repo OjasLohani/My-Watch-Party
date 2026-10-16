@@ -40,6 +40,29 @@ begin
     raise exception 'Pre-flight: realtime.messages / realtime.topic() not found (Supabase Realtime Authorization)';
   end if;
 
+  -- Private channel rules only work while RLS is on for realtime.messages.
+  if not (select c.relrowsecurity from pg_class c where c.oid = 'realtime.messages'::regclass) then
+    raise exception 'Pre-flight: Row Level Security is disabled on realtime.messages; private channels would be open to everyone';
+  end if;
+
+  -- Channel names are "room:<uuid>", so room ids must be UUIDs.
+  if (select format_type(a.atttypid, a.atttypmod) from pg_attribute a
+      where a.attrelid = 'public.rooms'::regclass and a.attname = 'id') <> 'uuid' then
+    raise exception 'Pre-flight: rooms.id is expected to be a uuid';
+  end if;
+
+  -- Report (never change) other realtime.messages policies. They stay as
+  -- they are; the RESTRICTIVE policy in section 5 makes sure none of
+  -- them can open a room channel to non-members.
+  for problem in
+    select format('%s (%s, %s, roles: %s)', p.policyname, p.permissive, p.cmd, array_to_string(p.roles, ','))
+    from pg_policies p
+    where p.schemaname = 'realtime' and p.tablename = 'messages'
+      and p.policyname not like 'Watch party %'
+  loop
+    raise notice 'Existing realtime.messages policy kept: %', problem;
+  end loop;
+
   -- Do not take over tables or functions with our names that we did not create.
   select string_agg(c.relname, ', ') into problem
   from pg_class c
@@ -289,16 +312,22 @@ begin
     raise exception 'Messages must be 1–500 characters.' using errcode = '22023';
   end if;
 
+  -- One send at a time per user per room, so parallel requests cannot
+  -- all pass the count below before any of them is inserted. The lock is
+  -- released automatically at the end of the transaction.
+  perform pg_advisory_xact_lock(hashtext('watch-party:send_message:' || target.id::text || ':' || uid));
+
   if (select count(*) from public.room_messages m
       where m.room_id = target.id and m.user_id = uid
-        and m.created_at > now() - interval '10 seconds') >= 10 then
+        and m.created_at > clock_timestamp() - interval '10 seconds') >= 10 then
     raise exception 'You are sending messages too quickly.' using errcode = '54000';
   end if;
 
   select * into sender from public.room_members m where m.room_id = target.id and m.user_id = uid;
 
-  insert into public.room_messages (room_id, user_id, user_name, user_avatar, user_color, body)
-  values (target.id, uid, sender.name, coalesce(sender.avatar, ''), coalesce(sender.color, '#94A3B8'), p_body)
+  insert into public.room_messages (room_id, user_id, user_name, user_avatar, user_color, body, created_at)
+  values (target.id, uid, sender.name, coalesce(sender.avatar, ''), coalesce(sender.color, '#94A3B8'), p_body,
+          clock_timestamp())
   returning * into result;
 
   return result;
@@ -473,8 +502,12 @@ declare
 begin
   target := public.wp_member_room(p_code, false);
 
+  -- FOR SHARE: a concurrent close_poll / create_poll (which UPDATE this
+  -- row) waits until this vote commits; if the close came first, the
+  -- re-checked row is no longer active and the vote is refused.
   select * into poll from public.room_polls p
-  where p.id = p_poll_id and p.room_id = target.id and p.is_active;
+  where p.id = p_poll_id and p.room_id = target.id and p.is_active
+  for share;
   if not found then
     raise exception 'This poll is closed or does not exist.' using errcode = 'P0002';
   end if;
@@ -523,16 +556,60 @@ to authenticated;
 -- ---------------------------------------------------------------------
 -- 5. Realtime Authorization for private channels "room:<room id>"
 -- ---------------------------------------------------------------------
--- Only members of the room may join (receive) or send broadcast /
--- presence messages on its channel. Other existing realtime policies
--- are left untouched.
+-- Room channels are named exactly "room:<room uuid>" (lowercase, no
+-- extra segments). Only members of that room may join (receive) or send
+-- broadcast / presence messages on it.
+--
+-- PostgreSQL ORs permissive policies together, so a broader policy that
+-- already exists (e.g. "authenticated can read everything") would open
+-- room channels to anyone. The RESTRICTIVE policy below is ANDed with
+-- every other policy: for any topic starting with "room:" (any case) it
+-- requires a well-formed topic AND membership, whatever other policies
+-- say. Topics that do not start with "room:" are not affected, so
+-- unrelated Realtime policies keep working exactly as before.
+
+-- Not signed in: room channels are always closed. (A separate policy so
+-- anon never needs permission to run wp_my_room_ids.)
+drop policy if exists "Watch party room channels are closed to anon" on realtime.messages;
+create policy "Watch party room channels are closed to anon"
+  on realtime.messages
+  as restrictive
+  for all
+  to anon
+  using (lower(coalesce((select realtime.topic()), '')) not like 'room:%')
+  with check (lower(coalesce((select realtime.topic()), '')) not like 'room:%');
+
+-- Signed in: room channels need a well-formed topic and membership.
+drop policy if exists "Watch party room channels are members only" on realtime.messages;
+create policy "Watch party room channels are members only"
+  on realtime.messages
+  as restrictive
+  for all
+  to authenticated
+  using (
+    lower(coalesce((select realtime.topic()), '')) not like 'room:%'
+    or (
+      (select realtime.topic()) ~ '^room:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      and substr((select realtime.topic()), 6) in (select public.wp_my_room_ids())
+    )
+  )
+  with check (
+    lower(coalesce((select realtime.topic()), '')) not like 'room:%'
+    or (
+      (select realtime.topic()) ~ '^room:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      and substr((select realtime.topic()), 6) in (select public.wp_my_room_ids())
+      and realtime.messages.extension in ('broadcast', 'presence')
+    )
+  );
+
+-- Permissive grants for members (needed because RLS denies by default).
 drop policy if exists "Watch party members can join room channels" on realtime.messages;
 create policy "Watch party members can join room channels"
   on realtime.messages for select
   to authenticated
   using (
-    split_part((select realtime.topic()), ':', 1) = 'room'
-    and split_part((select realtime.topic()), ':', 2) in (select public.wp_my_room_ids())
+    (select realtime.topic()) ~ '^room:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    and substr((select realtime.topic()), 6) in (select public.wp_my_room_ids())
   );
 
 drop policy if exists "Watch party members can send on room channels" on realtime.messages;
@@ -541,8 +618,8 @@ create policy "Watch party members can send on room channels"
   to authenticated
   with check (
     realtime.messages.extension in ('broadcast', 'presence')
-    and split_part((select realtime.topic()), ':', 1) = 'room'
-    and split_part((select realtime.topic()), ':', 2) in (select public.wp_my_room_ids())
+    and (select realtime.topic()) ~ '^room:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    and substr((select realtime.topic()), 6) in (select public.wp_my_room_ids())
   );
 
 -- ---------------------------------------------------------------------

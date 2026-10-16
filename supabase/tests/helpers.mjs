@@ -117,9 +117,21 @@ function legacySchema(withKeys) {
   `;
 }
 
-export async function createDb({ withKeys = true } = {}) {
+// A pre-existing, overly broad Realtime policy (e.g. from a tutorial)
+// that the Stage 2 migration must not delete but must neutralise for
+// room channels.
+const BROAD_REALTIME_POLICIES = `
+  create policy "Existing broad read" on realtime.messages for select to anon, authenticated using (true);
+  create policy "Existing broad write" on realtime.messages for insert to anon, authenticated with check (true);
+  grant select, insert on realtime.messages to anon;
+  grant usage on sequence realtime.messages_id_seq to anon;
+`;
+
+export async function createDb({ withKeys = true, broadRealtimePolicies = false, realtimeRls = true } = {}) {
   const db = new PGlite();
   await db.exec(SHIM);
+  if (broadRealtimePolicies) await db.exec(BROAD_REALTIME_POLICIES);
+  if (!realtimeRls) await db.exec('alter table realtime.messages disable row level security;');
   await db.exec(`set role owner_role; ${legacySchema(withKeys)} reset role;`);
   for (const id of Object.values(USERS)) {
     await db.query('insert into auth.users (id) values ($1)', [id]);
