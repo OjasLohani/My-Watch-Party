@@ -1,4 +1,5 @@
-import { ArrowRightLeft, Plus, Check, Crown } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Plus, Check, Crown, Loader2 } from 'lucide-react';
 import type { User } from '../../types';
 import { Avatar } from '../ui/Avatar';
 
@@ -6,7 +7,8 @@ interface ParticipantsListProps {
   members: User[];
   currentUserId: string;
   isHost: boolean;
-  onTransferHost: (targetUserId: string) => void;
+  /** Host only; the server checks again (transfer_host) */
+  onTransferHost: (targetUserId: string) => void | Promise<void>;
   /** strip: compact row under the player; list: full panel with host actions */
   variant?: 'strip' | 'list';
   onInvite?: () => void;
@@ -28,6 +30,41 @@ export function ParticipantsList({
   onInvite,
   inviteCopied = false,
 }: ParticipantsListProps) {
+  // One transfer at a time. The ref blocks a second click at once (state
+  // only updates on the next render, so a fast double click would send two).
+  const [transferringTo, setTransferringTo] = useState<string | null>(null);
+  const transferringRef = useRef(false);
+  const transfer = (member: User) => {
+    if (transferringRef.current) return;
+    transferringRef.current = true;
+    setTransferringTo(member.id);
+    void Promise.resolve(onTransferHost(member.id)).finally(() => {
+      transferringRef.current = false;
+      setTransferringTo(null);
+    });
+  };
+
+  /** Only the host sees it, next to everyone except themselves */
+  const canMakeHost = (member: User) => isHost && !member.isHost && member.id !== currentUserId;
+
+  const makeHostButton = (member: User, size: 'list' | 'strip') => (
+    <button
+      type="button"
+      onClick={() => transfer(member)}
+      disabled={transferringTo !== null}
+      aria-busy={transferringTo === member.id}
+      title={`Make ${member.name} the host`}
+      aria-label={`Make Host: transfer hosting to ${member.name}`}
+      className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-gold-muted/70 bg-gold/10 font-semibold text-gold transition-colors hover:border-gold hover:bg-gold/20 hover:text-gold-bright disabled:cursor-not-allowed disabled:opacity-60 ${
+        size === 'list' ? 'h-9 px-3 text-xs' : 'mt-1 h-7 px-2 text-[11px]'
+      }`}
+    >
+      {transferringTo === member.id
+        ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        : <Crown className="h-3.5 w-3.5" aria-hidden="true" />}
+      Make Host
+    </button>
+  );
   const onlineCount = members.filter((m) => m.isOnline !== false).length;
   const people = ordered(members);
 
@@ -80,18 +117,7 @@ export function ParticipantsList({
                     {member.isHost ? 'Host' : online ? 'Online' : 'Offline'}
                   </p>
                 </div>
-                {isHost && !member.isHost && (
-                  <button
-                    type="button"
-                    onClick={() => onTransferHost(member.id)}
-                    title={`Make ${member.name} the host`}
-                    aria-label={`Transfer host to ${member.name}`}
-                    className="btn-icon h-8 shrink-0 gap-1 rounded-md px-2 text-[11px]"
-                  >
-                    <ArrowRightLeft className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span className="hidden sm:inline">Make host</span>
-                  </button>
-                )}
+                {canMakeHost(member) && makeHostButton(member, 'list')}
               </li>
             );
           })}
@@ -122,6 +148,7 @@ export function ParticipantsList({
                 <div className={`text-[11px] ${member.isHost ? 'text-gold-muted' : online ? 'text-ash' : 'text-ash-muted'}`}>
                   {member.isHost ? 'Host' : online ? 'Online' : 'Offline'}
                 </div>
+                {canMakeHost(member) && makeHostButton(member, 'strip')}
               </div>
             </div>
           );

@@ -258,8 +258,8 @@ test('host transfer: the old host loses the YouTube choice, the new host gains i
 
   // Manual transfer from the Participants tab
   assert.ok(await clickButtonWithText(page, 'Participants'));
-  await page.waitForSelector('button[aria-label^="Transfer host to"]');
-  await page.click('button[aria-label^="Transfer host to"]');
+  await page.waitForSelector('button[aria-label^="Make Host"]');
+  await page.click('button[aria-label^="Make Host"]');
   await page.waitForFunction(() => /The host chooses the video/.test(document.body.innerText), { timeout: 10000 });
   assert.equal(fake.state.room.host_id, guestId);
   assert.ok(await clickButtonWithText(page, YT_BUTTON));

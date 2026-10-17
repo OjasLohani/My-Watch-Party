@@ -36,7 +36,7 @@ interface WatchRoomScreenProps {
   onVoteCast: (optionId: string) => Promise<string | null>;
   onCreatePoll: (question: string, options: string[]) => Promise<string | null>;
   onClosePoll: () => Promise<string | null>;
-  onTransferHost: (targetUserId: string) => void;
+  onTransferHost: (targetUserId: string) => void | Promise<void>;
   onSimulateDrift: () => void;
   onOpenDiscover: () => void;
   /** Opens the "change your name" dialog */
