@@ -7,14 +7,19 @@ import type { Movie, SortOption } from '../../types';
 import { CATEGORIES } from '../../mockData';
 import { genresOf, searchMovies, sortMovies, stepMovie } from '../../lib/catalog';
 import { Artwork } from '../ui/Artwork';
+import { HeroBackdrop } from './HeroBackdrop';
 import type { NavTarget } from '../Navbar';
 import { SECTIONS, scrollToSection } from './sections';
+
+type FeatureUpdate = string | ((currentId: string | undefined) => string | undefined);
 
 interface DiscoverPageProps {
   movies: Movie[];
   featuredId: string | undefined;
-  /** Show a movie in the spotlight (never starts playback) */
-  onFeature: (movieId: string) => void;
+  /** Show a movie in the spotlight (never starts playback); also accepts
+   *  a function of the current film, so quick repeated arrow clicks each
+   *  step from the latest choice */
+  onFeature: (next: FeatureUpdate) => void;
   /** The existing watch flow for a movie (room / create-room dialog) */
   onWatchNow: (movie: Movie) => void;
   /** Open "Create Room" with this movie preselected */
@@ -131,7 +136,7 @@ export function DiscoverPage({
 interface FeaturedHeroProps {
   movie: Movie;
   movies: Movie[];
-  onFeature: (movieId: string) => void;
+  onFeature: (next: FeatureUpdate) => void;
   onWatchNow: (movie: Movie) => void;
   onHostWithMovie: (movie: Movie) => void;
   inWatchlist: boolean;
@@ -142,6 +147,7 @@ function FeaturedHero({ movie, movies, onFeature, onWatchNow, onHostWithMovie, i
   const topRated = useMemo(() => sortMovies(movies, 'rating-desc').slice(0, 4), [movies]);
   const genres = genresOf(movie);
   const position = movies.findIndex((m) => m.id === movie.id);
+  const neighbours = useMemo(() => [1, -1].map((step) => movies.find((m) => m.id === stepMovie(movies, movie.id, step as 1 | -1))!).filter(Boolean), [movies, movie.id]);
 
   return (
     <section
@@ -151,20 +157,13 @@ function FeaturedHero({ movie, movies, onFeature, onWatchNow, onHostWithMovie, i
       className="relative isolate scroll-mt-20 overflow-hidden border-b border-bronze-soft"
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
-        if (e.key === 'ArrowRight') onFeature(stepMovie(movies, movie.id, 1)!);
-        if (e.key === 'ArrowLeft') onFeature(stepMovie(movies, movie.id, -1)!);
+        if (e.key === 'ArrowRight') onFeature((current) => stepMovie(movies, current, 1));
+        if (e.key === 'ArrowLeft') onFeature((current) => stepMovie(movies, current, -1));
       }}
     >
       {/* Artwork of the featured film, graded warm and faded into the page */}
-      <div aria-hidden="true" className="absolute inset-0 -z-10">
-        <Artwork
-          key={movie.id}
-          sources={[movie.backdropUrl, movie.posterUrl]}
-          alt=""
-          loading="eager"
-          fetchPriority="high"
-          className="h-full w-full object-cover object-[60%_35%] animate-fade-in [filter:sepia(0.5)_saturate(0.72)_hue-rotate(-8deg)_brightness(0.72)_contrast(1.08)]"
-        />
+      <div aria-hidden="true" className="absolute inset-0 -z-10 overflow-hidden">
+        <HeroBackdrop movie={movie} neighbours={neighbours} />
         <div className="absolute inset-0 bg-gradient-to-t from-ink via-ink/35 to-ink/10 lg:via-ink/10" />
         <div className="absolute inset-0 hidden bg-gradient-to-r from-ink via-ink/70 to-transparent md:block lg:w-[70%]" />
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_70%_30%,transparent_40%,rgb(8_7_6/0.55)_100%)]" />
@@ -173,7 +172,7 @@ function FeaturedHero({ movie, movies, onFeature, onWatchNow, onHostWithMovie, i
       <div className="relative mx-auto grid max-w-[1440px] gap-8 px-4 sm:px-8 lg:min-h-[520px] lg:grid-cols-[minmax(0,1fr)_340px]">
         {/* Film details */}
         <div className="flex min-h-[460px] flex-col justify-end pb-8 pt-40 sm:min-h-[520px] lg:min-h-0 lg:justify-center lg:pb-14 lg:pl-14 lg:pt-12">
-          <div key={movie.id} className="max-w-[580px] animate-fade-up" aria-live="polite">
+          <div key={movie.id} className="max-w-[580px] animate-hero-text" aria-live="polite">
             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-ivory/85">
               {movie.category} {movie.category !== genres[0] && genres[0] ? `• ${genres[0]}` : ''}
             </p>
@@ -265,7 +264,7 @@ function FeaturedHero({ movie, movies, onFeature, onWatchNow, onHostWithMovie, i
       {/* Carousel arrows */}
       <button
         type="button"
-        onClick={() => onFeature(stepMovie(movies, movie.id, -1)!)}
+        onClick={() => onFeature((current) => stepMovie(movies, current, -1))}
         className="btn-icon absolute left-3 top-24 h-10 w-10 sm:left-5 lg:top-1/2 lg:h-11 lg:w-11 lg:-translate-y-1/2"
         aria-label="Previous film"
       >
@@ -273,7 +272,7 @@ function FeaturedHero({ movie, movies, onFeature, onWatchNow, onHostWithMovie, i
       </button>
       <button
         type="button"
-        onClick={() => onFeature(stepMovie(movies, movie.id, 1)!)}
+        onClick={() => onFeature((current) => stepMovie(movies, current, 1))}
         className="btn-icon absolute right-3 top-24 h-10 w-10 sm:right-5 lg:right-[calc(max(2rem,calc((100vw-1440px)/2+2rem))+340px+3rem)] lg:top-1/2 lg:h-11 lg:w-11 lg:-translate-y-1/2"
         aria-label="Next film"
       >

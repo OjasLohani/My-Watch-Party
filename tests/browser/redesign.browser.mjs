@@ -287,3 +287,125 @@ test('room: Leave Room asks first; Cancel stays, Leave returns home', async () =
   assert.equal(await page.$('video'), null);
   await context.close();
 });
+
+// ------------------------------------------------------------- spotlight transitions
+
+/** Background layers currently in the hero (bottom first) */
+const layers = (page) => page.$$eval('#home [data-hero-layer]', (els) => els.map((e) => e.getAttribute('data-hero-layer')));
+
+/** Waits until the crossfade is over: exactly one layer, for this film */
+const waitForSettledBackground = (page, movieId) => page.waitForFunction((id) => {
+  const els = document.querySelectorAll('#home [data-hero-layer]');
+  return els.length === 1 && els[0].getAttribute('data-hero-layer') === id;
+}, { timeout: 15000, polling: 50 }, movieId);
+
+/** Samples the layers every few ms while the transition runs */
+async function sampleLayers(page, ms) {
+  return page.evaluate(async (duration) => {
+    const samples = [];
+    const end = performance.now() + duration;
+    while (performance.now() < end) {
+      samples.push([...document.querySelectorAll('#home [data-hero-layer]')].map((e) => e.getAttribute('data-hero-layer')));
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return samples;
+  }, ms);
+}
+
+test('transition: crossfade keeps the old background until the new one is in (Next and Previous)', async () => {
+  const { context, page } = await visitor();
+  await page.goto(baseUrl);
+  await waitForSettledBackground(page, firstFeatured.id);
+
+  for (const [arrow, step] of [['Next film', 1], ['Previous film', -1]]) {
+    const from = (await layers(page))[0];
+    const to = mockMovies[(mockMovies.findIndex((m) => m.id === from) + step + mockMovies.length) % mockMovies.length];
+    await page.click(`button[aria-label="${arrow}"]`);
+    assertHeroShows(await hero(page), to); // text and buttons switch at once
+    // Long enough for a cold download of the artwork plus the 600 ms fade
+    const samples = await sampleLayers(page, 4000);
+    assert.ok(samples.every((s) => s.length >= 1), 'never a blank background');
+    assert.ok(samples.some((s) => s.length === 2 && s[0] === from && s[1] === to.id), 'old and new layered during the crossfade');
+    await waitForSettledBackground(page, to.id);
+
+    // The incoming layer fades and zooms; the text rises in
+    const timing = await page.evaluate(() => ({
+      text: getComputedStyle(document.querySelector('#home h1').parentElement).animationDuration,
+    }));
+    assert.equal(timing.text, '0.36s');
+  }
+  await context.close();
+});
+
+test('transition: rapid clicking ends on the right film with matching actions', async () => {
+  const { context, page, errors } = await visitor();
+  await page.goto(baseUrl);
+  await waitForSettledBackground(page, firstFeatured.id);
+
+  await page.evaluate(() => {
+    const next = document.querySelector('button[aria-label="Next film"]');
+    for (let i = 0; i < 7; i++) next.click();
+  });
+  await page.click('button[aria-label="Previous film"]');
+  const expected = mockMovies[(indexOf(firstFeatured) + 6) % mockMovies.length];
+  assertHeroShows(await hero(page), expected);
+  await waitForSettledBackground(page, expected.id);
+
+  // My List acts on the film shown
+  await page.click('#home button[aria-pressed]');
+  assert.deepEqual(
+    await page.$$eval('#my-list button[aria-label$="in the spotlight"]', (els) => els.map((e) => e.getAttribute('aria-label'))),
+    [`Show ${expected.title} in the spotlight`],
+  );
+  // Watch Now plays the film shown
+  await page.click(`#home button[aria-label="Watch Now: ${expected.title}"]`);
+  await page.waitForSelector(`[role="region"][aria-label^="Video player: ${expected.title}"]`, { timeout: 15000 });
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
+test('transition: poster cards, Top Rated and search use the same crossfade', async () => {
+  const { context, page } = await visitor();
+  await page.goto(baseUrl);
+  await waitForSettledBackground(page, firstFeatured.id);
+
+  const card = mockMovies[4];
+  await page.click(`#now-showing button[aria-label="Show ${card.title} in the spotlight"]`);
+  await page.waitForSelector(`#home [data-hero-layer="${card.id}"].animate-hero-in`);
+  await waitForSettledBackground(page, card.id);
+
+  const top = [...mockMovies].sort((a, b) => b.rating - a.rating)[0];
+  await page.click(`#home aside button[aria-label="Show ${top.title} in the spotlight"]`);
+  await page.waitForSelector(`#home [data-hero-layer="${top.id}"].animate-hero-in`);
+  await waitForSettledBackground(page, top.id);
+
+  const searched = mockMovies.find((m) => m.title.startsWith('Quantum'));
+  await page.type('nav input[aria-label="Search films"]', 'quantum');
+  await page.waitForSelector('[role="listbox"] [role="option"]');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`#home [data-hero-layer="${searched.id}"].animate-hero-in`);
+  await waitForSettledBackground(page, searched.id);
+  assertHeroShows(await hero(page), searched);
+  await context.close();
+});
+
+test('transition: reduced motion switches films without animation', async () => {
+  const { context, page } = await visitor();
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  await page.goto(baseUrl);
+  await waitForSettledBackground(page, firstFeatured.id);
+  await page.click('button[aria-label="Next film"]');
+  const next = mockMovies[(indexOf(firstFeatured) + 1) % mockMovies.length];
+  await page.waitForSelector(`#home [data-hero-layer="${next.id}"]`);
+  const durations = await page.evaluate(() => ({
+    layer: getComputedStyle([...document.querySelectorAll('#home [data-hero-layer]')].at(-1)).animationDuration,
+    text: getComputedStyle(document.querySelector('#home h1').parentElement).animationDuration,
+  }));
+  for (const d of [...durations.layer.split(','), durations.text]) assert.ok(parseFloat(d) < 0.001, `no visible animation (${d})`);
+  await waitForSettledBackground(page, next.id);
+  // Focus stays on the arrow for keyboard users
+  await page.focus('button[aria-label="Next film"]');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Next film');
+  await context.close();
+});
