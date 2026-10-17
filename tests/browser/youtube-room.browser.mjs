@@ -1,7 +1,8 @@
 // Real-browser tests of YouTube videos in the actual app ("real room"
-// mode) against the fake Supabase backend (fakeSupabase.mjs): the Add
-// YouTube Video dialog, host-only controls, the shared queue and
-// switching between YouTube videos and catalog movies.
+// mode) against the fake Supabase backend (fakeSupabase.mjs): the
+// "Watch YouTube Together" button and dialog, host-only rules (also after
+// host changes), the shared queue and switching between YouTube videos
+// and catalog movies.
 // YouTube's oEmbed check is faked per test; the player is the real one.
 // Synchronization of YouTube playback itself: youtube-sync.browser.mjs.
 // Database rules (host-only, valid ids, titles): supabase/tests/stage4a.test.mjs.
@@ -31,10 +32,11 @@ after(async () => {
   await server?.close();
 });
 
-/** Joins the fake room through the invite link, as host or guest */
-async function joined({ asHost = false, setup } = {}) {
-  const fake = createFakeSupabase();
-  fake.state.oembed = {
+/** Joins the fake room through the invite link, as host or guest.
+ *  Pass `fake` to put a second person in the same room. */
+async function joined({ asHost = false, setup, fake: shared, width = 1400, height = 1000 } = {}) {
+  const fake = shared ?? createFakeSupabase();
+  if (!shared) fake.state.oembed = {
     [BUNNY]: { title: 'Big Buck Bunny 60fps 4K - Official Blender Foundation Short Film' },
     [OTHER]: { title: 'YouTube Developers Live: Embedded Web Player Customization' },
     [NOT_EMBEDDABLE]: { status: 401 },
@@ -43,7 +45,7 @@ async function joined({ asHost = false, setup } = {}) {
   setup?.(fake);
   const context = await browser.createBrowserContext();
   const page = await context.newPage();
-  await page.setViewport({ width: 1400, height: 1000 });
+  await page.setViewport({ width, height });
   await page.evaluateOnNewDocument(() => {
     localStorage.setItem('watchparty_user_name', 'Gus');
     localStorage.setItem('watchparty_user_name_chosen', '1');
@@ -76,11 +78,24 @@ async function openQueue(page) {
   await wait(200);
 }
 
+const YT_BUTTON = 'Watch YouTube Together';
+
+/** The dedicated button under the player (not in the queue) */
+const youTubeButton = (page) => page.evaluateHandle(() =>
+  [...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Watch YouTube Together')));
+
 async function openYouTubeDialog(page) {
-  await openQueue(page);
-  assert.ok(await clickButtonWithText(page, 'YouTube'), 'YouTube button');
+  assert.ok(await clickButtonWithText(page, YT_BUTTON), 'YouTube button');
   await page.waitForSelector('#youtube-link-input');
 }
+
+/** The queue tab no longer has its own YouTube button */
+const queueHasYouTubeButton = (page) =>
+  page.$$eval('#room-tab-panel button', (bs) => bs.some((b) => /youtube/i.test(b.textContent)));
+
+const guestMessageShown = (page) => page.waitForFunction(() =>
+  [...document.querySelectorAll('[role="status"]')].some((el) => el.textContent.includes('Only the host can choose a YouTube video.')),
+{ timeout: 5000 });
 
 async function checkLink(page, link) {
   await page.$eval('#youtube-link-input', (input) => {
@@ -96,7 +111,7 @@ const dialogError = (page) =>
 const playerFrame = (page) =>
   page.evaluate(() => document.querySelector('[role="region"][aria-label^="Video player"] iframe')?.src ?? null);
 
-test('guests: no YouTube button; a YouTube video chosen by the host plays for them, locked', async () => {
+test('guests: see the YouTube button but only get a message; the host\'s video plays for them, locked', async () => {
   const { fake, context, page } = await joined({
     setup: (f) => {
       f.state.playback = {
@@ -105,8 +120,15 @@ test('guests: no YouTube button; a YouTube video chosen by the host plays for th
       };
     },
   });
+  // The dedicated button is visible to guests, outside the queue
+  const button = await youTubeButton(page);
+  assert.ok(await button.evaluate((b) => Boolean(b) && b.offsetParent !== null), 'button visible');
+  assert.match(await button.evaluate((b) => b.innerText), /The host chooses the video/);
+  await button.click();
+  await guestMessageShown(page);
+  assert.equal(await page.$('#youtube-link-input'), null, 'no dialog for guests');
   await openQueue(page);
-  assert.equal(await clickButtonWithText(page, 'YouTube'), false, 'guests have no YouTube button');
+  assert.equal(await queueHasYouTubeButton(page), false);
 
   await page.waitForFunction(() => document.querySelector('iframe[src*="youtube-nocookie.com/embed/"]'), { timeout: 30000 });
   assert.match(await playerFrame(page), new RegExp(`^https://www\\.youtube-nocookie\\.com/embed/${BUNNY}\\?`));
@@ -114,7 +136,7 @@ test('guests: no YouTube button; a YouTube video chosen by the host plays for th
   await page.waitForFunction(() => document.body.innerText.includes('Big Buck Bunny 60fps 4K'), { timeout: 10000 });
   const locked = await page.evaluate(() => document.querySelector('[role="region"] button[aria-label="Play"]')?.disabled);
   assert.equal(locked, true, 'guest cannot play/pause');
-  assert.equal(fake.callsTo('set_playback').length, 0, 'guest never publishes');
+  assert.equal(fake.callsTo('set_playback').length + fake.callsTo('playlist_add_video').length, 0, 'guest never publishes');
   await context.close();
 });
 
@@ -151,6 +173,11 @@ test('host: add to queue → everyone sees the title → play it → switch back
       f.state.playlist.push({ id: 99, room_id: f.state.room.id, movie_id: 'movie-2', position: 0, added_by: 'x', added_by_name: 'Hana', title: null });
     },
   });
+  // The queue keeps its films and actions, but no longer has a YouTube button
+  await openQueue(page);
+  assert.equal(await queueHasYouTubeButton(page), false, 'queue has no YouTube button (host)');
+  assert.ok(await page.$('button[aria-label="Play Cosmos: Nebula Odyssey"]'), 'queued films still playable');
+
   await openYouTubeDialog(page);
   await checkLink(page, `youtube.com/watch?v=${BUNNY}&t=30s`); // no https://, extra parameters
   await page.waitForSelector('[data-testid="youtube-preview"]', { timeout: 10000 });
@@ -191,12 +218,15 @@ test('host: add to queue → everyone sees the title → play it → switch back
   await context.close();
 });
 
-test('host: Play Now starts a YouTube video for the room at once', async () => {
+test('host: Watch Together makes it the room\'s current video; a guest joining later gets the same video', async () => {
   const { fake, context, page } = await joined({ asHost: true });
   await openYouTubeDialog(page);
   await checkLink(page, `https://m.youtube.com/watch?v=${OTHER}`);
   await page.waitForSelector('[data-testid="youtube-preview"]', { timeout: 10000 });
-  await clickButtonWithText(page, 'Play Now');
+  const dialogText = await page.$eval('[role="dialog"]', (el) => el.innerText);
+  assert.match(dialogText, /Watch YouTube Together/i);
+  assert.match(dialogText, /Cancel/);
+  await clickButtonWithText(page, 'Watch Together');
   await page.waitForFunction(() => document.querySelector('iframe[src*="youtube-nocookie.com/embed/"]'), { timeout: 30000 });
   const call = fake.callsTo('set_playback').at(-1);
   assert.deepEqual(
@@ -205,5 +235,74 @@ test('host: Play Now starts a YouTube video for the room at once', async () => {
   );
   assert.match(await playerFrame(page), new RegExp(`/embed/${OTHER}\\?`));
   await page.waitForFunction(() => document.body.innerText.includes('YouTube Developers Live'), { timeout: 10000 });
+  assert.equal(fake.callsTo('playlist_add_video').length, 0, 'not just queued');
+  assert.equal(fake.state.room.current_movie_id, `yt:${OTHER}`, 'the room\'s current video');
+
+  // A guest who joins now gets the same YouTube video, locked to the host
+  const guest = await joined({ fake });
+  await guest.page.waitForFunction(() => document.querySelector('iframe[src*="youtube-nocookie.com/embed/"]'), { timeout: 30000 });
+  assert.match(await playerFrame(guest.page), new RegExp(`/embed/${OTHER}\\?`));
+  assert.equal(await guest.page.evaluate(() =>
+    document.querySelector('[role="region"] button[aria-label="Play"], [role="region"] button[aria-label="Pause"]')?.disabled), true);
+  await guest.context.close();
+  await context.close();
+});
+
+test('host transfer: the old host loses the YouTube choice, the new host gains it', async () => {
+  const { fake, context, page } = await joined({ asHost: true });
+  const guest = await joined({ fake });
+  const guestId = fake.callsTo('join_room').at(-1).userId;
+  // The host's page loads the member list again (realtime is not simulated)
+  await page.reload();
+  await page.waitForFunction(() => document.body.innerText.includes('Room Participants'), { timeout: 20000 });
+
+  // Manual transfer from the Participants tab
+  assert.ok(await clickButtonWithText(page, 'Participants'));
+  await page.waitForSelector('button[aria-label^="Transfer host to"]');
+  await page.click('button[aria-label^="Transfer host to"]');
+  await page.waitForFunction(() => /The host chooses the video/.test(document.body.innerText), { timeout: 10000 });
+  assert.equal(fake.state.room.host_id, guestId);
+  assert.ok(await clickButtonWithText(page, YT_BUTTON));
+  await guestMessageShown(page);
+  assert.equal(await page.$('#youtube-link-input'), null, 'old host cannot open the dialog');
+
+  // The new host's page learns it from the server and can choose a video
+  await guest.page.waitForFunction(() => /Paste a link, everyone watches in sync/.test(document.body.innerText), { timeout: 15000 });
+  await openYouTubeDialog(guest.page);
+  await checkLink(guest.page, `https://youtu.be/${BUNNY}`);
+  await guest.page.waitForSelector('[data-testid="youtube-preview"]', { timeout: 10000 });
+  await clickButtonWithText(guest.page, 'Watch Together');
+  await guest.page.waitForFunction(() => document.querySelector('iframe[src*="youtube-nocookie.com/embed/"]'), { timeout: 30000 });
+  const call = fake.callsTo('set_playback').at(-1);
+  assert.equal(call.userId, guestId, 'published by the new host');
+  assert.equal(call.body.p_movie_id, `yt:${BUNNY}`);
+  await guest.context.close();
+  await context.close();
+});
+
+test('automatic transfer: a guest who becomes host can choose a YouTube video', async () => {
+  const { fake, context, page } = await joined();
+  const me = fake.callsTo('join_room').at(-1).userId;
+  assert.match(await (await youTubeButton(page)).evaluate((b) => b.innerText), /The host chooses the video/);
+  fake.state.room.host_id = me; // the server moved hosting (e.g. the host's lease expired)
+  await page.waitForFunction(() => /Paste a link, everyone watches in sync/.test(document.body.innerText), { timeout: 15000 });
+  await openYouTubeDialog(page);
+  await context.close();
+});
+
+test('phones: the YouTube button is full width right under the player', async () => {
+  const { context, page } = await joined({ asHost: true, width: 390, height: 844 });
+  const layout = await page.evaluate(() => {
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Watch YouTube Together'));
+    const player = document.querySelector('[role="region"][aria-label^="Video player"]');
+    const b = button.getBoundingClientRect();
+    const p = player.getBoundingClientRect();
+    return { width: b.width, playerWidth: p.width, gap: b.top - p.bottom, overflow: document.documentElement.scrollWidth - innerWidth };
+  });
+  assert.ok(Math.abs(layout.width - layout.playerWidth) < 2, `full width (${layout.width} vs ${layout.playerWidth})`);
+  assert.ok(layout.gap >= 0 && layout.gap < 30, `directly below the player (${layout.gap}px)`);
+  assert.equal(layout.overflow, 0);
+  await openYouTubeDialog(page);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, 'dialog fits');
   await context.close();
 });

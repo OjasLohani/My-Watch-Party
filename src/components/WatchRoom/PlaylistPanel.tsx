@@ -1,4 +1,4 @@
-import { Play, Plus, ChevronUp, ChevronDown, X, MonitorPlay, ListVideo } from 'lucide-react';
+import { Play, Plus, ChevronUp, ChevronDown, X, ListVideo } from 'lucide-react';
 import type { PlaylistItem } from '../../types';
 import { Artwork } from '../ui/Artwork';
 
@@ -14,8 +14,6 @@ interface PlaylistPanelProps {
   onMoveItem?: (item: PlaylistItem, direction: -1 | 1) => void;
   /** Current display names by user id */
   nameById?: Map<string, string>;
-  /** Host only: open the "Add YouTube Video" dialog */
-  onAddYouTube?: () => void;
 }
 
 export function PlaylistPanel({
@@ -27,7 +25,6 @@ export function PlaylistPanel({
   onRemoveItem,
   onMoveItem,
   nameById,
-  onAddYouTube,
 }: PlaylistPanelProps) {
   return (
     <div className="flex h-full flex-col">
@@ -39,12 +36,6 @@ export function PlaylistPanel({
           </p>
         </div>
         <div className="flex items-center gap-1.5">
-          {isHost && onAddYouTube && (
-            <button type="button" onClick={onAddYouTube} className="btn-gold h-8 px-2.5 text-xs">
-              <MonitorPlay className="h-3.5 w-3.5" aria-hidden="true" />
-              YouTube
-            </button>
-          )}
           <button
             type="button"
             onClick={onOpenDiscover}
@@ -62,7 +53,7 @@ export function PlaylistPanel({
           <ListVideo className="h-6 w-6 text-gold-muted" aria-hidden="true" />
           <p className="mt-2 text-xs text-ash">
             {isHost
-              ? 'The queue is empty. Use “Queue Film”, “YouTube” or the queue button on any film.'
+              ? 'The queue is empty. Use “Queue Film”, the queue button on any film, or “Add to Queue” in Watch YouTube Together.'
               : 'The queue is empty. The host can add films and videos.'}
           </p>
         </div>

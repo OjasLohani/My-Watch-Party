@@ -262,7 +262,11 @@ test('room: five accessible tabs, queue rules for viewers vs host, settings, rea
   assert.match(await page.$eval('#room-settings-panel', (el) => el.innerText), /FILM-CLUB-404/);
   await page.evaluate(() => [...document.querySelectorAll('#room-settings-panel button')].find((b) => b.textContent.includes('Switch to host')).click());
   await page.keyboard.press('Escape');
-  await page.waitForFunction(() => [...document.querySelectorAll('#room-tab-panel button')].some((b) => b.textContent.trim() === 'YouTube'));
+  await page.waitForFunction(() => document.querySelector('#room-tab-panel button[aria-label^="Remove"]'));
+  assert.equal(await page.$$eval('#room-tab-panel button', (bs) => bs.some((b) => /youtube/i.test(b.textContent))), false, 'no YouTube button in the queue');
+  await page.evaluate(() => [...document.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Watch YouTube Together')).click());
+  await page.waitForSelector('#youtube-link-input');
+  await page.keyboard.press('Escape');
   assert.ok(await page.$('#room-tab-panel button[aria-label^="Remove"]'), 'host can edit the queue');
 
   // Quick reactions float over the player

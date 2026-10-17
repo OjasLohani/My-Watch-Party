@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { MessageSquare, Users, Smile, ListVideo, Vote, MonitorPlay } from 'lucide-react';
+import { MessageSquare, Users, Smile, ListVideo, Vote, MonitorPlay, ChevronRight, Lock } from 'lucide-react';
 import type { Room, User, Movie, PlaylistItem, ChatMessage, Poll, FloatingReaction } from '../../types';
 import type { RealtimeStatus } from '../../hooks/useRoomRealtime';
 import { REACTION_EMOJIS } from '../../lib/reactions';
@@ -13,6 +13,7 @@ import { LeaveRoomDialog } from './LeaveRoomDialog';
 import { AddYouTubeDialog } from './AddYouTubeDialog';
 import { RoomHeader } from './RoomHeader';
 import { Artwork } from '../ui/Artwork';
+import { YouTubeLogo } from '../ui/YouTubeLogo';
 
 interface WatchRoomScreenProps {
   room: Room;
@@ -96,7 +97,24 @@ export function WatchRoomScreen({
   const [isLeaving, setIsLeaving] = useState(false);
   const [leaveError, setLeaveError] = useState('');
   const leavingRef = useRef(false);
-  const [isYouTubeDialogOpen, setIsYouTubeDialogOpen] = useState(false);
+  // The YouTube dialog belongs to the host who opened it: if hosting moves
+  // to someone else it closes (the server would refuse the change anyway)
+  const [youTubeDialogHostId, setYouTubeDialogHostId] = useState<string | null>(null);
+  const isYouTubeDialogOpen = youTubeDialogHostId !== null && youTubeDialogHostId === room.hostId && currentUser.isHost;
+  const [youTubeNotice, setYouTubeNotice] = useState('');
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  /** Everyone sees the button; only the host may choose the room's video */
+  const handleYouTubeButton = () => {
+    if (currentUser.isHost) {
+      setYouTubeNotice('');
+      setYouTubeDialogHostId(room.hostId);
+      return;
+    }
+    setYouTubeNotice('Only the host can choose a YouTube video.');
+    clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = setTimeout(() => setYouTubeNotice(''), 4000);
+  };
 
   const openLeaveDialog = () => {
     setLeaveError('');
@@ -194,6 +212,41 @@ export function WatchRoomScreen({
               <FloatingReactions reactions={floatingReactions} />
             </div>
 
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              {onAddYouTube && (
+                <div className="relative sm:shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleYouTubeButton}
+                    aria-describedby="youtube-button-hint"
+                    className="group flex w-full items-center gap-3.5 rounded-xl border border-bronze bg-gradient-to-r from-surface-2 via-surface to-surface px-4 py-2.5 text-left shadow-[0_10px_28px_-20px_rgb(255_0_0/0.35)] transition-[border-color,transform,box-shadow] hover:-translate-y-0.5 hover:border-gold-muted hover:shadow-[0_14px_30px_-18px_rgb(255_0_0/0.45)] active:translate-y-0 sm:w-auto sm:min-w-[300px]"
+                  >
+                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-bronze bg-ink/70 transition-colors group-hover:border-[#ff0000]/50">
+                      <YouTubeLogo className="h-[22px] w-[31px]" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[15px] font-semibold text-ivory">Watch YouTube Together</span>
+                      <span id="youtube-button-hint" className="flex items-center gap-1 text-[11px] text-ash">
+                        {currentUser.isHost ? (
+                          'Paste a link, everyone watches in sync'
+                        ) : (
+                          <>
+                            <Lock className="h-3 w-3" aria-hidden="true" />
+                            The host chooses the video
+                          </>
+                        )}
+                      </span>
+                    </span>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-ash transition-colors group-hover:text-gold" aria-hidden="true" />
+                  </button>
+                  {youTubeNotice && (
+                    <p role="status" className="mt-2 rounded-lg border border-gold-muted/40 bg-ink/90 px-3 py-2 text-xs text-ivory animate-fade-in sm:absolute sm:left-0 sm:top-full sm:z-30 sm:mt-2 sm:whitespace-nowrap">
+                      {youTubeNotice}
+                    </p>
+                  )}
+                </div>
+              )}
+
             <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Quick reactions">
               {REACTION_EMOJIS.map((emoji) => (
                 <button
@@ -207,7 +260,8 @@ export function WatchRoomScreen({
                   {emoji}
                 </button>
               ))}
-              <span className="ml-1 hidden text-[11px] text-ash sm:inline">Reactions float over everyone's screen</span>
+              <span className="ml-1 hidden text-[11px] text-ash xl:inline">Reactions float over everyone's screen</span>
+            </div>
             </div>
           </div>
 
@@ -312,7 +366,6 @@ export function WatchRoomScreen({
                     onRemoveItem={onRemoveFromPlaylist}
                     onMoveItem={onMovePlaylistItem}
                     nameById={nameById}
-                    onAddYouTube={onAddYouTube ? () => setIsYouTubeDialogOpen(true) : undefined}
                   />
                 )}
 
@@ -378,7 +431,7 @@ export function WatchRoomScreen({
       </div>
 
       {isYouTubeDialogOpen && onAddYouTube && (
-        <AddYouTubeDialog onClose={() => setIsYouTubeDialogOpen(false)} onAdd={onAddYouTube} />
+        <AddYouTubeDialog onClose={() => setYouTubeDialogHostId(null)} onAdd={onAddYouTube} />
       )}
 
       {isLeaveDialogOpen && (

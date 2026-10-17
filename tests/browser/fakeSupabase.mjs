@@ -110,6 +110,14 @@ export function createFakeSupabase() {
       state.room.current_movie_id = body.p_movie_id;
       return [200, state.playback];
     },
+    transfer_host(userId, body) {
+      const refused = notHost(userId);
+      if (refused) return refused;
+      if (!state.members.some((m) => m.user_id === body.p_new_host_id)) return [400, { message: 'That person is not in the room.', code: 'P0002' }];
+      state.room.host_id = body.p_new_host_id;
+      state.members = state.members.map((m) => ({ ...m, is_host: m.user_id === state.room.host_id }));
+      return [204, null];
+    },
     playlist_add(userId, body) {
       return notHost(userId) ?? addToQueue(userId, body.p_movie_id, null);
     },

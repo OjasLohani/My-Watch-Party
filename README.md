@@ -17,7 +17,7 @@ anonymous Auth, Row Level Security, Realtime).
 | Display names | Guests pick a name before their first room (also from invite links); it is remembered on the device and can be changed with the ✏️ button next to your name. Each person can only change their own name. |
 | Guest accounts | Everyone is signed in automatically with Supabase **anonymous auth**: a real, private identity with no sign-up. |
 | Synchronized playback | The host's play/pause/seek/movie is stored with a server timestamp; every viewer computes the shared position and corrects drift (speed nudge for small drift, jump for large). |
-| YouTube videos | The host pastes a youtube.com, youtu.be or Shorts link (**Add YouTube Video** in the Queue tab) and can queue it or play it now. It plays in the official YouTube player, synchronized like the films. Only the video ID is stored. |
+| YouTube videos | Everyone sees **Watch YouTube Together** under the player; the host pastes a youtube.com, youtu.be or Shorts link and **Watch Together** makes it the room's video for everyone (or adds it to the queue). Guests get a message that only the host chooses. It plays in the official YouTube player, synchronized like the films. Only the video ID is stored. |
 | Late join & reconnect | New and reconnecting viewers jump straight to the shared position. |
 | Chat | Stored in Supabase, last 100 messages load on join. |
 | Reactions | Live emoji over the video (not stored). |
