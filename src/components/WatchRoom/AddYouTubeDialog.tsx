@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, MonitorPlay, Loader2, ListPlus, Play } from 'lucide-react';
+import { MonitorPlay, Loader2, ListPlus, Play } from 'lucide-react';
+import { ModalShell } from '../ui/ModalShell';
 import { fetchYouTubeInfo, parseYouTubeLink, youTubeThumbnail } from '../../lib/youtube';
 
 interface AddYouTubeDialogProps {
@@ -19,16 +20,8 @@ export function AddYouTubeDialog({ onClose, onAdd }: AddYouTubeDialogProps) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const checkRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !busyAction) onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      checkRef.current?.abort();
-    };
-  }, [busyAction, onClose]);
+  // Cancel a running check when the dialog closes
+  useEffect(() => () => checkRef.current?.abort(), []);
 
   const check = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,40 +57,25 @@ export function AddYouTubeDialog({ onClose, onAdd }: AddYouTubeDialogProps) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in">
-      <div
-        className="relative w-full max-w-md rounded-2xl border border-white/[0.1] bg-[#0A0C13] p-6 shadow-2xl sm:p-8"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="youtube-dialog-title"
-      >
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={Boolean(busyAction)}
-          className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 hover:bg-white/[0.08] hover:text-white transition-colors"
-          aria-label="Close"
-        >
-          <X className="h-5 w-5" />
-        </button>
-
-        <span className="text-[10px] font-semibold tracking-wider text-violet-400 uppercase">Host</span>
-        <h2 id="youtube-dialog-title" className="text-xl font-bold tracking-tight text-white mt-0.5">
+    <ModalShell labelledBy="youtube-dialog-title" describedBy="youtube-dialog-description" onClose={onClose} busy={Boolean(busyAction)} widthClass="max-w-md">
+      <div className="p-6 sm:p-8">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-gold">Host</p>
+        <h2 id="youtube-dialog-title" className="heading-display mt-1.5 text-[1.9rem] text-ivory">
           Add YouTube Video
         </h2>
-        <p className="text-xs text-slate-400 mt-1">
+        <p id="youtube-dialog-description" className="mt-2 text-sm text-ivory/80">
           Paste a link from youtube.com, youtu.be or YouTube Shorts. Everyone in the room watches it together.
         </p>
 
         {error && (
-          <div className="mt-4 rounded-xl border border-red-500/30 bg-red-950/40 p-3 text-xs text-red-200" role="alert">
+          <div className="alert-error mt-5" role="alert">
             {error}
           </div>
         )}
 
         {/* noValidate: links without https:// are fine; errors come from parseYouTubeLink */}
-        <form onSubmit={check} noValidate className="mt-5 space-y-3">
-          <label htmlFor="youtube-link-input" className="block text-xs font-semibold text-slate-300">
+        <form onSubmit={check} noValidate className="mt-6 space-y-3">
+          <label htmlFor="youtube-link-input" className="field-label">
             YouTube link
           </label>
           <div className="relative">
@@ -113,34 +91,30 @@ export function AddYouTubeDialog({ onClose, onAdd }: AddYouTubeDialogProps) {
               placeholder="https://www.youtube.com/watch?v=…"
               maxLength={300}
               autoComplete="off"
-              className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:border-violet-500/60 focus:outline-none"
+              className="field pl-11"
               autoFocus
             />
-            <MonitorPlay className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-slate-500" />
+            <MonitorPlay className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ash" aria-hidden="true" />
           </div>
           {!preview && (
-            <button
-              type="submit"
-              disabled={isChecking}
-              className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-600/20 px-4 py-2.5 text-xs font-semibold text-violet-200 hover:bg-violet-600/30 transition-colors disabled:opacity-50"
-            >
-              {isChecking && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            <button type="submit" disabled={isChecking} className="btn-ghost h-10 w-full border-bronze text-sm" aria-busy={isChecking}>
+              {isChecking && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
               {isChecking ? 'Checking video…' : 'Check Link'}
             </button>
           )}
         </form>
 
         {preview && (
-          <div className="mt-4 space-y-3" data-testid="youtube-preview">
-            <div className="flex items-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.02] p-2.5">
+          <div className="mt-4 space-y-3 animate-fade-up" data-testid="youtube-preview">
+            <div className="flex items-center gap-3 rounded-xl border border-bronze bg-ink/50 p-2.5">
               <img
                 src={youTubeThumbnail(preview.videoId)}
                 alt=""
-                className="aspect-video w-24 shrink-0 rounded-lg object-cover bg-slate-900"
+                className="aspect-video w-24 shrink-0 rounded-md bg-surface-2 object-cover"
               />
               <div className="min-w-0">
-                <p className="truncate text-xs font-bold text-white" title={preview.title}>{preview.title}</p>
-                <p className="text-[10px] text-slate-400">
+                <p className="truncate text-sm font-semibold text-ivory" title={preview.title}>{preview.title}</p>
+                <p className="text-[11px] text-ash">
                   {preview.checked ? 'Ready to play' : 'Could not check this video right now; it may not play.'}
                 </p>
               </div>
@@ -150,24 +124,24 @@ export function AddYouTubeDialog({ onClose, onAdd }: AddYouTubeDialogProps) {
                 type="button"
                 onClick={() => void add('queue')}
                 disabled={Boolean(busyAction)}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08] transition-colors disabled:opacity-50"
+                className="btn-ghost h-10 flex-1 border-bronze text-sm"
               >
-                {busyAction === 'queue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ListPlus className="h-3.5 w-3.5" />}
+                {busyAction === 'queue' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <ListPlus className="h-4 w-4" aria-hidden="true" />}
                 Add to Queue
               </button>
               <button
                 type="button"
                 onClick={() => void add('play')}
                 disabled={Boolean(busyAction)}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 px-3 py-2.5 text-xs font-bold text-white transition-colors disabled:opacity-50"
+                className="btn-gold h-10 flex-1 text-sm"
               >
-                {busyAction === 'play' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-white" />}
+                {busyAction === 'play' ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4 fill-current" aria-hidden="true" />}
                 Play Now
               </button>
             </div>
           </div>
         )}
       </div>
-    </div>
+    </ModalShell>
   );
 }

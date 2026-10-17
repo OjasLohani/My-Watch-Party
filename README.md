@@ -11,6 +11,7 @@ anonymous Auth, Row Level Security, Realtime).
 
 | Feature | How it works |
 |---|---|
+| Discover | A spotlight film (arrows, Top Rated list, poster row and search all change it; nothing plays until **Watch Now**), the library with categories and sorting, and **My List** (saved on this device). |
 | Rooms & invites | Create a room, share `https://<site>/?room=FILM-7K3QX9`. Codes are random and hard to guess. |
 | Leaving | **Leave Room** (with confirmation) removes you from the room on the server; if you were host, a connected guest takes over immediately. **Library** browses movies while you stay in the room. You can rejoin with the same invite link. |
 | Display names | Guests pick a name before their first room (also from invite links); it is remembered on the device and can be changed with the ✏️ button next to your name. Each person can only change their own name. |

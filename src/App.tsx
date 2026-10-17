@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { Loader2 } from 'lucide-react';
-import { Navbar } from './components/Navbar';
-import { DiscoverHero } from './components/DiscoverHero';
-import { MovieGrid } from './components/MovieGrid';
+import { Navbar, type NavTarget } from './components/Navbar';
+import { MobileNav } from './components/MobileNav';
+import { DiscoverPage } from './components/discover/DiscoverPage';
+import { SECTION_FOR_TARGET, scrollToSection } from './components/discover/sections';
 import { ToastContainer } from './components/ToastContainer';
+import { Logo } from './components/ui/Logo';
+import { defaultFeaturedId } from './lib/catalog';
+import { useWatchlist } from './lib/watchlist';
 
 // Loaded on demand: not needed for the first view of the homepage
 const WatchRoomScreen = lazy(() =>
@@ -20,8 +24,8 @@ const StageOverview = lazy(() =>
 /** Shown while a lazily loaded part of the app downloads */
 function SectionLoader({ label }: { label: string }) {
   return (
-    <div className="flex min-h-[200px] items-center justify-center gap-2 text-xs text-slate-400" role="status">
-      <Loader2 className="h-4 w-4 animate-spin text-violet-400" />
+    <div className="flex min-h-[200px] items-center justify-center gap-2 text-xs text-ash" role="status">
+      <Loader2 className="h-4 w-4 animate-spin text-gold" />
       <span>{label}</span>
     </div>
   );
@@ -138,6 +142,54 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
   const [showArchBenchmark, setShowArchBenchmark] = useState(false);
+
+  // --- Discover page: spotlight film, search, navigation, My List ---
+  // Selecting a film only changes the spotlight; nothing plays until Watch Now.
+  const [featuredId, setFeaturedId] = useState(() => defaultFeaturedId(mockMovies));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [navTarget, setNavTarget] = useState<NavTarget>('home');
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
+  const pendingSectionRef = useRef<string | null>(null);
+  const watchlist = useWatchlist(mockMovies.map((m) => m.id));
+
+  /** Goes to a part of the discover page, or to the room */
+  const navigate = useCallback((target: NavTarget) => {
+    setMobileSearchOpen(false);
+    setNavTarget(target);
+    if (target === 'room') {
+      setCurrentView('room');
+      window.scrollTo({ top: 0 });
+      return;
+    }
+    const section = SECTION_FOR_TARGET[target] ?? 'home';
+    if (currentView === 'discover') scrollToSection(section);
+    else {
+      pendingSectionRef.current = section;
+      setCurrentView('discover');
+    }
+  }, [currentView]);
+
+  // After switching to the discover page, scroll to the requested section
+  useEffect(() => {
+    if (currentView !== 'discover') return;
+    const section = pendingSectionRef.current;
+    pendingSectionRef.current = null;
+    if (section) requestAnimationFrame(() => scrollToSection(section));
+    else window.scrollTo({ top: 0 });
+  }, [currentView]);
+
+  /** A film chosen from search: show it in the spotlight */
+  const handleSelectSearchResult = (movie: Movie) => {
+    setFeaturedId(movie.id);
+    navigate('home');
+  };
+
+  const handleToggleWatchlist = (movieId: string) => {
+    const movie = mockMovies.find((m) => m.id === movieId);
+    const added = watchlist.toggle(movieId);
+    if (movie) addToast(added ? `Added "${movie.title}" to My List.` : `Removed "${movie.title}" from My List.`, 'info');
+    return added;
+  };
 
   // Helper for Toasts
   const addToast = useCallback((message: string, type: Toast['type'] = 'info') => {
@@ -897,83 +949,61 @@ export default function App() {
     }
   };
 
+  const editName = () => setNamePrompt({ mode: 'edit' });
+
   return (
-    <div className="min-h-screen bg-[#06070B] text-slate-100 selection:bg-violet-500/30 selection:text-white flex flex-col justify-between">
+    <div className="flex min-h-screen flex-col bg-ink text-ivory">
       {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onDismiss={handleDismissToast} />
 
-      {/* Main Navigation Bar */}
-      <Navbar
-        currentView={currentView}
-        onNavigate={setCurrentView}
-        currentUser={currentUser}
-        activeRoom={activeRoom}
-        onOpenCreateModal={() => {
-          setSelectedMovieForCreate(undefined);
-          setIsCreateModalOpen(true);
-        }}
-        onOpenJoinModal={() => setIsJoinModalOpen(true)}
-        onToggleHostRole={handleToggleHostRole}
-        canToggleHostRole={canToggleHostRole}
-        onEditName={() => setNamePrompt({ mode: 'edit' })}
-      />
+      {currentView === 'discover' && (
+        <Navbar
+          activeTarget={navTarget}
+          onNavigate={navigate}
+          currentUser={currentUser}
+          roomCode={activeRoom.code}
+          isInLiveRoom={isRealRoom}
+          movies={mockMovies}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onSelectSearchResult={handleSelectSearchResult}
+          mobileSearchOpen={mobileSearchOpen}
+          onMobileSearchOpenChange={setMobileSearchOpen}
+          onOpenCreateModal={() => {
+            setSelectedMovieForCreate(undefined);
+            setIsCreateModalOpen(true);
+          }}
+          onOpenJoinModal={() => setIsJoinModalOpen(true)}
+          onToggleHostRole={handleToggleHostRole}
+          canToggleHostRole={canToggleHostRole}
+          onEditName={editName}
+        />
+      )}
 
-      {/* Backend Status Notice */}
-      {!isSupabaseConfigured() && (
-        <div className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-2 text-center text-xs text-amber-300">
-          <span>⚡ Stage 3 Architecture Ready: Supabase schema & real-time client connected. Run the SQL migration below to enable live multi-user database persistence!</span>
+      {/* Without Supabase settings everything runs locally (demo mode) */}
+      {!isSupabaseConfigured() && currentView === 'discover' && (
+        <div className="border-b border-bronze-soft bg-gold/[0.04] px-4 py-2 text-center text-xs text-gold-muted">
+          Demo mode: Supabase is not configured, so rooms run only in this browser with sample data.
         </div>
       )}
 
-      {/* Main View Screen */}
       <main className="flex-1">
         {currentView === 'discover' ? (
-          <div>
-            {/* Cinematic Hero */}
-            <DiscoverHero
-              featuredMovies={mockMovies.filter((m) => m.featured)}
-              onPlayMovieInRoom={handlePlayMovie}
-              onOpenCreateModalWithMovie={(m) => {
-                setSelectedMovieForCreate(m.id);
-                setIsCreateModalOpen(true);
-              }}
-            />
-
-            {/* Catalog Grid with Search, Categories & Sorting */}
-            <MovieGrid
-              movies={mockMovies}
-              onPlayMovie={handlePlayMovie}
-              onAddToPlaylist={handleAddToPlaylist}
-            />
-
-            {/* Collapsible Architecture & Quality Targets Spec Card */}
-            <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-              <div className="rounded-2xl border border-white/[0.08] bg-[#0A0C13] p-4 text-center">
-                <button
-                  type="button"
-                  onClick={() => setShowArchBenchmark((prev) => !prev)}
-                  className="text-xs font-semibold text-violet-300 hover:text-white transition-colors"
-                >
-                  {showArchBenchmark ? '▲ Hide Quality Targets & Stage Verification Bench' : '▼ View Sync Latency Targets (<250ms) & Verification Checklist'}
-                </button>
-                {showArchBenchmark && (
-                  <div className="mt-4 pt-4 border-t border-white/[0.06] text-left">
-                    <Suspense fallback={<SectionLoader label="Loading checklist…" />}>
-                    <StageOverview
-                      room={activeRoom}
-                      currentUser={currentUser}
-                      members={displayedMembers}
-                      driftMs={driftMs}
-                      onSimulateDrift={handleSimulateDrift}
-                      onToggleHostRole={handleToggleHostRole}
-                      canToggleHostRole={canToggleHostRole}
-                    />
-                    </Suspense>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          <DiscoverPage
+            movies={mockMovies}
+            featuredId={featuredId}
+            onFeature={setFeaturedId}
+            onWatchNow={(movie) => void handlePlayMovie(movie)}
+            onHostWithMovie={(movie) => {
+              setSelectedMovieForCreate(movie.id);
+              setIsCreateModalOpen(true);
+            }}
+            onAddToQueue={(movie) => void handleAddToPlaylist(movie)}
+            watchlist={{ ids: watchlist.ids, has: watchlist.has, toggle: handleToggleWatchlist }}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            onSectionChange={setNavTarget}
+          />
         ) : (
           /* Watch Room View Screen */
           <Suspense fallback={<SectionLoader label="Opening the screening room…" />}>
@@ -1001,7 +1031,12 @@ export default function App() {
             onClosePoll={handleClosePoll}
             onTransferHost={handleTransferHost}
             onSimulateDrift={handleSimulateDrift}
-            onOpenDiscover={() => setCurrentView('discover')}
+            onOpenDiscover={() => {
+              setNavTarget('home');
+              setCurrentView('discover');
+            }}
+            onEditName={editName}
+            onToggleHostRole={canToggleHostRole ? handleToggleHostRole : undefined}
             floatingReactions={floatingReactions}
             playbackSync={isRealRoom ? {
               playback,
@@ -1016,6 +1051,19 @@ export default function App() {
           </Suspense>
         )}
       </main>
+
+      {currentView === 'discover' && (
+        <MobileNav
+          activeTarget={navTarget}
+          onNavigate={navigate}
+          searchOpen={mobileSearchOpen}
+          onSearch={() => {
+            setMobileSearchOpen((open) => !open);
+            window.scrollTo({ top: 0 });
+          }}
+          isInLiveRoom={isRealRoom}
+        />
+      )}
 
       {/* Modals (mounted fresh on each open, so forms and the preselected movie reset) */}
       <Suspense fallback={null}>
@@ -1035,6 +1083,8 @@ export default function App() {
             isOpen={isJoinModalOpen}
             onClose={() => setIsJoinModalOpen(false)}
             onJoinRoom={handleJoinRoom}
+            savedName={getChosenName()}
+            onEditName={editName}
           />
         )}
         {namePrompt && (
@@ -1047,21 +1097,46 @@ export default function App() {
         )}
       </Suspense>
 
-      {/* Footer */}
-      <footer className="border-t border-white/[0.06] bg-[#06070B] py-6 text-xs text-slate-400">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 sm:px-6">
-          <p>
-            🎬 <span className="font-semibold text-slate-300">Watch Party</span> • College Club Selection Project
-          </p>
-          <div className="flex items-center gap-4 text-slate-400">
-            <span>Supabase JS Client Active</span>
-            <span>•</span>
-            <span>RLS Protected</span>
-            <span>•</span>
-            <span>Multi-Session Ready</span>
+      {/* Footer (with the project's sync targets and verification checklist) */}
+      {currentView === 'discover' && (
+        <footer className="border-t border-bronze-soft pb-24 pt-8 text-xs text-ash md:pb-8">
+          <div className="mx-auto max-w-[1440px] px-4 sm:px-8">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <Logo withWordmark />
+                <span className="hidden text-ash-muted sm:inline">Synchronized screenings for film clubs</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowArchBenchmark((prev) => !prev)}
+                aria-expanded={showArchBenchmark}
+                className="text-xs text-gold-muted transition-colors hover:text-gold"
+              >
+                {showArchBenchmark ? 'Hide sync targets & checklist' : 'Sync targets (<250 ms) & verification checklist'}
+              </button>
+            </div>
+            {showArchBenchmark && (
+              <div className="panel mt-4 p-4 text-left">
+                <Suspense fallback={<SectionLoader label="Loading checklist…" />}>
+                <StageOverview
+                  room={activeRoom}
+                  currentUser={currentUser}
+                  members={displayedMembers}
+                  driftMs={driftMs}
+                  onSimulateDrift={handleSimulateDrift}
+                  onToggleHostRole={handleToggleHostRole}
+                  canToggleHostRole={canToggleHostRole}
+                />
+                </Suspense>
+              </div>
+            )}
+            <p className="mt-6 text-[11px] text-ash-muted">
+              Catalog films are open movies (Blender Foundation and others) under Creative Commons licences; artwork from Unsplash.
+              YouTube videos play in YouTube&apos;s official player.
+            </p>
           </div>
-        </div>
-      </footer>
+        </footer>
+      )}
     </div>
   );
 }

@@ -1,29 +1,25 @@
-import { useEffect, useState } from 'react';
-import { X, Key, Loader2, ArrowRight } from 'lucide-react';
+import { useState } from 'react';
+import { KeyRound, Loader2, ArrowRight } from 'lucide-react';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { ROOM_CODE_PATTERN } from '../services/roomService';
+import { ModalShell } from './ui/ModalShell';
+import { Logo } from './ui/Logo';
 
 interface JoinRoomModalProps {
   isOpen: boolean;
   onClose: () => void;
   /** Resolves to an error message, or null when the room was joined */
   onJoinRoom: (code: string) => Promise<string | null>;
+  /** The saved display name, if any (shown so returning guests know it is kept) */
+  savedName?: string;
+  /** Opens the "change your name" dialog */
+  onEditName?: () => void;
 }
 
-export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProps) {
+export function JoinRoomModal({ isOpen, onClose, onJoinRoom, savedName, onEditName }: JoinRoomModalProps) {
   const [code, setCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-
-  // Escape closes the dialog
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -58,114 +54,96 @@ export function JoinRoomModal({ isOpen, onClose, onJoinRoom }: JoinRoomModalProp
     onClose();
   };
 
-  const handleSelectQuickCode = (quickCode: string) => {
-    setCode(quickCode);
-    setError('');
-  };
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in">
-      <div 
-        className="relative w-full max-w-md rounded-2xl border border-white/[0.1] bg-[#0A0C13] p-6 shadow-2xl sm:p-8"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="join-modal-title"
-      >
-        {/* Close Button */}
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 hover:bg-white/[0.08] hover:text-white transition-colors"
-          aria-label="Close modal"
-        >
-          <X className="h-5 w-5" />
-        </button>
-
-        {/* Modal Header */}
-        <div>
-          <span className="text-[10px] font-semibold tracking-wider text-violet-400 uppercase">
-            Club Screening Pass
-          </span>
-          <h2 id="join-modal-title" className="text-xl font-bold tracking-tight text-white mt-0.5">
-            Join Watch Party
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Enter an invite code to synchronize into an active theater session.
-          </p>
-        </div>
+    <ModalShell labelledBy="join-modal-title" describedBy="join-modal-subtitle" onClose={onClose} busy={isLoading} widthClass="max-w-md" closeLabel="Close modal">
+      <div className="p-6 sm:p-8">
+        <Logo />
+        <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.2em] text-gold">Screening Pass</p>
+        <h2 id="join-modal-title" className="heading-display mt-1.5 text-[2rem] text-ivory sm:text-[2.3rem]">
+          Join Watch Party
+        </h2>
+        <p id="join-modal-subtitle" className="mt-2 text-sm text-ivory/80">
+          Enter the room code from your invite to watch in sync with everyone.
+        </p>
 
         {error && (
-          <div className="mt-4 rounded-xl border border-red-500/30 bg-red-950/40 p-3 text-xs text-red-200">
+          <div className="alert-error mt-5" role="alert">
             {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300">
+        <form onSubmit={handleSubmit} className="mt-6 space-y-5">
+          <div className="space-y-2">
+            <label htmlFor="join-room-code" className="field-label">
+              <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
               Room Code
             </label>
-            <div className="relative mt-1.5">
-              <input
-                type="text"
-                value={code}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="e.g. FILM-7K3QX9"
-                className="w-full rounded-xl border border-white/[0.08] bg-white/[0.03] pl-10 pr-4 py-2.5 font-mono text-sm uppercase text-white placeholder-slate-500 tracking-wider transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
-                autoFocus
-              />
-              <Key className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-slate-500" />
-            </div>
+            <input
+              id="join-room-code"
+              type="text"
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              placeholder="e.g. FILM-7K3QX9"
+              autoComplete="off"
+              spellCheck={false}
+              className="field font-mono uppercase tracking-[0.12em]"
+              autoFocus
+            />
           </div>
+
+          {/* Returning guests keep their name; it can be changed here */}
+          {savedName && (
+            <p className="flex flex-wrap items-center gap-x-2 text-xs text-ash">
+              <span>
+                Joining as <span className="font-semibold text-ivory">{savedName}</span>
+              </span>
+              {onEditName && (
+                <button type="button" onClick={onEditName} className="text-gold underline-offset-2 hover:underline">
+                  Change name
+                </button>
+              )}
+            </p>
+          )}
 
           {/* Quick test codes for demo (only meaningful without Supabase) */}
           {!isSupabaseConfigured() && (
-          <div>
-            <span className="text-[11px] text-slate-400 font-mono">Quick Test Rooms (Mock Data):</span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {['FILM-CLUB-404', 'CYBER-NIGHT-01', 'ANIME-CLUB-77'].map((quick) => (
-                <button
-                  key={quick}
-                  type="button"
-                  onClick={() => handleSelectQuickCode(quick)}
-                  className="rounded-lg border border-white/[0.08] bg-white/[0.02] px-2.5 py-1 font-mono text-xs text-slate-300 hover:border-violet-500/30 hover:bg-violet-950/20 hover:text-white transition-colors"
-                >
-                  {quick}
-                </button>
-              ))}
+            <div>
+              <span className="text-[11px] text-ash">Demo rooms (local sample data):</span>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {['FILM-CLUB-404', 'CYBER-NIGHT-01', 'ANIME-CLUB-77'].map((quick) => (
+                  <button
+                    key={quick}
+                    type="button"
+                    onClick={() => {
+                      setCode(quick);
+                      setError('');
+                    }}
+                    className="rounded-md border border-bronze bg-ink/50 px-2.5 py-1 font-mono text-xs text-ivory/85 transition-colors hover:border-gold-muted hover:text-gold"
+                  >
+                    {quick}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
           )}
 
-          {/* Actions */}
-          <div className="mt-6 flex items-center justify-end gap-3 pt-3 border-t border-white/[0.06]">
+          <div className="flex items-center justify-end gap-3 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl px-4 py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors"
+              disabled={isLoading}
+              className="rounded-lg px-4 py-2.5 text-sm font-medium text-ash transition-colors hover:text-ivory disabled:opacity-50"
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-xs font-semibold text-white shadow-lg shadow-violet-950/50 transition-all disabled:opacity-50"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Connecting...
-                </>
-              ) : (
-                <>
-                  Join Theater
-                  <ArrowRight className="h-4 w-4" />
-                </>
-              )}
+            <button type="submit" disabled={isLoading} className="btn-gold h-11 px-6 text-sm" aria-busy={isLoading}>
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+              {isLoading ? 'Connecting…' : 'Join Theater'}
+              {!isLoading && <ArrowRight className="h-4 w-4" aria-hidden="true" />}
             </button>
           </div>
         </form>
       </div>
-    </div>
+    </ModalShell>
   );
 }

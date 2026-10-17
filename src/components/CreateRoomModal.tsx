@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
-import { X, Lock, Globe, Film, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { Lock, Globe, Film, Loader2, Rocket, Type, User as UserIcon, ChevronDown } from 'lucide-react';
 import type { Movie } from '../types';
 import { DISPLAY_NAME_MAX, validateDisplayName } from '../lib/displayName';
+import { ModalShell } from './ui/ModalShell';
+import { Logo } from './ui/Logo';
 
 interface CreateRoomModalProps {
   isOpen: boolean;
@@ -29,17 +31,8 @@ export function CreateRoomModal({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Escape closes the dialog
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
+  const movie = movies.find((m) => m.id === movieId);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,161 +65,142 @@ export function CreateRoomModal({
     onClose();
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xl animate-in fade-in">
-      <div 
-        className="relative w-full max-w-lg rounded-2xl border border-white/[0.1] bg-[#0A0C13] p-6 shadow-2xl sm:p-8"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
+  const privacyOption = (value: boolean, Icon: typeof Globe, title: string, caption: string) => {
+    const selected = isPrivate === value;
+    return (
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        onClick={() => setIsPrivate(value)}
+        className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
+          selected
+            ? 'border-gold bg-gold/[0.07] shadow-[inset_0_0_0_1px_rgb(242_210_123/0.25)]'
+            : 'border-bronze bg-ink/50 hover:border-gold-muted/60'
+        }`}
       >
-        {/* Close Button */}
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-4 top-4 rounded-lg p-1.5 text-slate-400 hover:bg-white/[0.08] hover:text-white transition-colors"
-          aria-label="Close modal"
-        >
-          <X className="h-5 w-5" />
-        </button>
+        <Icon className={`h-5 w-5 shrink-0 ${selected ? 'text-gold' : 'text-ash'}`} aria-hidden="true" />
+        <span>
+          <span className={`block text-sm font-semibold ${selected ? 'text-ivory' : 'text-ivory/80'}`}>{title}</span>
+          <span className="block text-[11px] text-ash">{caption}</span>
+        </span>
+      </button>
+    );
+  };
 
-        {/* Modal Header */}
-        <div>
-          <span className="text-[10px] font-semibold tracking-wider text-violet-400 uppercase">
-            Theater Setup
-          </span>
-          <h2 id="modal-title" className="text-xl font-bold tracking-tight text-white mt-0.5">
-            Create Watch Party Room
-          </h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Host a synchronized screening with live chat, reactions & playlist.
-          </p>
-        </div>
+  return (
+    <ModalShell
+      labelledBy="modal-title"
+      describedBy="modal-subtitle"
+      onClose={onClose}
+      busy={isLoading}
+      backdropUrl={movie?.backdropUrl}
+      widthClass="max-w-xl"
+      closeLabel="Close modal"
+    >
+      <div className="p-6 sm:p-9">
+        <Logo />
+        <p className="mt-5 text-[11px] font-semibold uppercase tracking-[0.2em] text-gold">Theater Setup</p>
+        <h2 id="modal-title" className="heading-display mt-1.5 text-[2rem] text-ivory sm:text-[2.6rem]">
+          Create Watch Party Room
+        </h2>
+        <p id="modal-subtitle" className="mt-2 text-sm text-ivory/80">
+          Host a synchronized screening with live chat, reactions & playlist.
+        </p>
 
         {error && (
-          <div className="mt-4 rounded-xl border border-red-500/30 bg-red-950/40 p-3 text-xs text-red-200">
+          <div className="alert-error mt-5" role="alert">
             {error}
           </div>
         )}
 
-        {/* Creation Form */}
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300">
+        {/* noValidate: our own messages explain what is missing */}
+        <form onSubmit={handleSubmit} noValidate className="mt-6 space-y-5">
+          <div className="space-y-2">
+            <label htmlFor="create-room-title" className="field-label">
+              <Type className="h-3.5 w-3.5" aria-hidden="true" />
               Room Title
             </label>
             <input
+              id="create-room-title"
               type="text"
               value={roomName}
               maxLength={80}
               onChange={(e) => setRoomName(e.target.value)}
               placeholder="e.g. Friday Night Sci-Fi"
-              className="mt-1.5 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
+              className="field"
               required
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-300">
+          <div className="space-y-2">
+            <label htmlFor="create-room-host" className="field-label">
+              <UserIcon className="h-3.5 w-3.5" aria-hidden="true" />
               Host Display Name
             </label>
             <input
+              id="create-room-host"
               type="text"
               value={hostName}
               maxLength={DISPLAY_NAME_MAX * 2 /* real limit checked on submit */}
               onChange={(e) => setHostName(e.target.value)}
               placeholder="e.g. Sam"
-              className="mt-1.5 w-full rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm text-white placeholder-slate-500 transition-colors focus:border-violet-500/60 focus:bg-white/[0.05] focus:outline-none"
+              autoComplete="nickname"
+              className="field"
               required
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-slate-300">
+          <div className="space-y-2">
+            <label htmlFor="create-room-film" className="field-label">
+              <Film className="h-3.5 w-3.5" aria-hidden="true" />
               Initial Feature Film
             </label>
-            <div className="relative mt-1.5">
+            <div className="relative">
+              <Film className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ash" aria-hidden="true" />
               <select
+                id="create-room-film"
                 value={movieId}
                 onChange={(e) => setMovieId(e.target.value)}
-                className="w-full appearance-none rounded-xl border border-white/[0.08] bg-[#11131E] px-4 py-2.5 text-sm text-white transition-colors focus:border-violet-500/60 focus:outline-none"
+                className="field appearance-none pl-11 pr-10"
               >
                 {movies.map((m) => (
-                  <option key={m.id} value={m.id} className="bg-[#101220] text-white">
+                  <option key={m.id} value={m.id} className="bg-surface text-ivory">
                     {m.title} ({m.year}) • {m.duration}
                   </option>
                 ))}
               </select>
-              <Film className="pointer-events-none absolute right-4 top-3 h-4 w-4 text-slate-400" />
+              <ChevronDown className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 text-ash" aria-hidden="true" />
             </div>
           </div>
 
-          {/* Privacy Option */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              Room Privacy
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setIsPrivate(false)}
-                className={`flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all ${
-                  !isPrivate
-                    ? 'border-violet-500/50 bg-violet-950/20 text-white'
-                    : 'border-white/[0.08] bg-white/[0.02] text-slate-400 hover:border-white/20'
-                }`}
-              >
-                <Globe className={`h-4 w-4 ${!isPrivate ? 'text-violet-400' : 'text-slate-500'}`} />
-                <div>
-                  <div className="text-xs font-semibold">Public</div>
-                  <div className="text-[10px] text-slate-400">Campus open join</div>
-                </div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setIsPrivate(true)}
-                className={`flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all ${
-                  isPrivate
-                    ? 'border-violet-500/50 bg-violet-950/20 text-white'
-                    : 'border-white/[0.08] bg-white/[0.02] text-slate-400 hover:border-white/20'
-                }`}
-              >
-                <Lock className={`h-4 w-4 ${isPrivate ? 'text-violet-400' : 'text-slate-500'}`} />
-                <div>
-                  <div className="text-xs font-semibold">Private</div>
-                  <div className="text-[10px] text-slate-400">Invite code only</div>
-                </div>
-              </button>
+          <fieldset className="space-y-2">
+            <legend className="field-label mb-2">Room Privacy</legend>
+            <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2" role="radiogroup" aria-label="Room privacy">
+              {privacyOption(false, Globe, 'Public', 'Shown as an open screening')}
+              {privacyOption(true, Lock, 'Private', 'Shown as a private room')}
             </div>
-          </div>
+            <p className="text-[11px] leading-relaxed text-ash">
+              Either way, people join with your invite link or room code; this label does not add a password.
+            </p>
+          </fieldset>
 
-          {/* Actions */}
-          <div className="mt-6 flex items-center justify-end gap-3 pt-3 border-t border-white/[0.06]">
+          <div className="flex items-center justify-end gap-3 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl px-4 py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors"
+              disabled={isLoading}
+              className="rounded-lg px-4 py-2.5 text-sm font-medium text-ash transition-colors hover:text-ivory disabled:opacity-50"
             >
               Cancel
             </button>
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="flex items-center gap-2 rounded-xl bg-violet-600 hover:bg-violet-500 px-5 py-2.5 text-xs font-semibold text-white shadow-lg shadow-violet-950/50 transition-all disabled:opacity-50"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Creating Room...
-                </>
-              ) : (
-                'Launch Party Room'
-              )}
+            <button type="submit" disabled={isLoading} className="btn-gold h-11 px-6 text-sm" aria-busy={isLoading}>
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Rocket className="h-4 w-4" aria-hidden="true" />}
+              {isLoading ? 'Creating Room…' : 'Launch Party Room'}
             </button>
           </div>
         </form>
       </div>
-    </div>
+    </ModalShell>
   );
 }

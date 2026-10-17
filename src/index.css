@@ -1,22 +1,57 @@
 @import "tailwindcss";
+/* Self-hosted fonts (SIL Open Font License); served from this site, so the
+   Content Security Policy (font-src 'self') needs no change. */
+@import "@fontsource-variable/oswald/wght.css";
+@import "@fontsource-variable/inter/wght.css";
+
+/* ------------------------------------------------------------------
+   Design tokens: dark cinema, bronze borders, warm gold accents.
+   Tailwind utilities are generated from these (bg-surface, text-gold,
+   border-bronze, font-display, …).
+   ------------------------------------------------------------------ */
+@theme {
+  --color-ink: #080706;            /* page background */
+  --color-surface: #12100f;        /* panels */
+  --color-surface-2: #1b1512;      /* raised panels, inputs */
+  --color-surface-3: #241a15;      /* hover / selected */
+  --color-bronze: #49382b;         /* thin borders */
+  --color-bronze-soft: #2e231c;    /* subtle separators */
+  --color-gold: #f2d27b;           /* primary accent */
+  --color-gold-bright: #ffd978;
+  --color-gold-muted: #c7a55a;
+  --color-ivory: #f7f1e7;          /* primary text */
+  --color-ash: #aaa19a;            /* secondary text */
+  --color-ash-muted: #8c837c;      /* muted text (≥ 4.5:1 on surface) */
+  --color-danger: #a83a32;
+  --color-danger-bright: #d4574d;
+  --color-success: #65a78b;
+
+  --font-display: "Oswald Variable", "Oswald", "Arial Narrow", Impact, sans-serif;
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+
+  --radius-panel: 1rem;
+  --shadow-panel: 0 24px 48px -24px rgb(0 0 0 / 0.85), 0 0 0 1px rgb(0 0 0 / 0.4);
+  --shadow-gold: 0 8px 24px -10px rgb(242 210 123 / 0.45);
+
+  --ease-cinema: cubic-bezier(0.22, 1, 0.36, 1);
+}
 
 @layer base {
   :root {
-    --bg-cinema: #06070B;
-    --surface-1: #0B0D14;
-    --surface-2: #10131F;
-    --surface-3: #171B2C;
-    --accent-violet: #8B5CF6;
-    --accent-cyan: #06B6D4;
-    --border-subtle: rgba(255, 255, 255, 0.08);
+    color-scheme: dark;
   }
 
   body {
     margin: 0;
     padding: 0;
-    background-color: var(--bg-cinema);
-    color: #F1F5F9;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: var(--color-ink);
+    /* Faint warm glow behind everything, like candle light in a dark hall */
+    background-image:
+      radial-gradient(ellipse 80% 50% at 70% -10%, rgb(120 70 30 / 0.16), transparent 70%),
+      radial-gradient(ellipse 60% 40% at 0% 100%, rgb(90 40 25 / 0.12), transparent 70%);
+    background-attachment: fixed;
+    color: var(--color-ivory);
+    font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
@@ -28,24 +63,176 @@
     flex-direction: column;
   }
 
-  /* Sleek Minimal Dark Scrollbar */
+  ::selection {
+    background: rgb(242 210 123 / 0.3);
+    color: var(--color-ivory);
+  }
+
+  /* Visible, consistent keyboard focus */
+  :focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
+  }
+
   ::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
+    width: 6px;
+    height: 6px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgb(199 165 90 / 0.25);
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgb(199 165 90 / 0.45);
   }
 }
 
-/* Floating reaction animation */
+/* ------------------------------------------------------------------
+   Reusable pieces
+   ------------------------------------------------------------------ */
+@layer components {
+  /* Gold primary action */
+  .btn-gold {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 0.5rem;
+    background: linear-gradient(180deg, var(--color-gold-bright), var(--color-gold) 55%, #e2bd5f);
+    color: #1a1208;
+    font-weight: 600;
+    box-shadow: var(--shadow-gold), inset 0 1px 0 rgb(255 255 255 / 0.35);
+    transition: filter 0.2s var(--ease-cinema), transform 0.2s var(--ease-cinema), box-shadow 0.2s;
+  }
+  .btn-gold:hover:not(:disabled) {
+    filter: brightness(1.06);
+    box-shadow: 0 10px 28px -10px rgb(242 210 123 / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.35);
+  }
+  .btn-gold:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .btn-gold:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  /* Outlined secondary action */
+  .btn-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgb(247 241 231 / 0.55);
+    background: rgb(8 7 6 / 0.35);
+    color: var(--color-ivory);
+    font-weight: 500;
+    transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    border-color: var(--color-gold);
+    color: var(--color-gold-bright);
+    background: rgb(242 210 123 / 0.06);
+  }
+  .btn-ghost:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  /* Round icon button (arrows, header actions) */
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 9999px;
+    border: 1px solid var(--color-bronze);
+    background: rgb(18 16 15 / 0.75);
+    color: var(--color-ivory);
+    transition: border-color 0.2s, color 0.2s, background-color 0.2s;
+  }
+  .btn-icon:hover:not(:disabled) {
+    border-color: var(--color-gold-muted);
+    color: var(--color-gold-bright);
+  }
+  .btn-icon:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Text inputs and selects */
+  .field {
+    width: 100%;
+    border-radius: 0.625rem;
+    border: 1px solid var(--color-bronze);
+    background: rgb(12 10 9 / 0.85);
+    color: var(--color-ivory);
+    padding: 0.7rem 1rem;
+    font-size: 0.9rem;
+    transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+  }
+  .field::placeholder {
+    color: var(--color-ash-muted);
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--color-gold-muted);
+    box-shadow: 0 0 0 3px rgb(242 210 123 / 0.12);
+  }
+  .field-label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--color-ash);
+  }
+
+  /* Bronze-framed dark panel */
+  .panel {
+    border-radius: var(--radius-panel);
+    border: 1px solid var(--color-bronze-soft);
+    background: linear-gradient(180deg, rgb(27 21 18 / 0.92), rgb(18 16 15 / 0.96));
+    box-shadow: var(--shadow-panel);
+  }
+
+  /* Small bordered tag (genres, status) */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-radius: 0.375rem;
+    border: 1px solid var(--color-bronze);
+    background: rgb(8 7 6 / 0.45);
+    padding: 0.15rem 0.5rem;
+    font-size: 0.7rem;
+    color: var(--color-ash);
+  }
+
+  /* Display headings ("TOP RATED", "CREATE WATCH PARTY ROOM") */
+  .heading-display {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    line-height: 1.02;
+  }
+
+  .alert-error {
+    border-radius: 0.625rem;
+    border: 1px solid rgb(168 58 50 / 0.55);
+    background: rgb(80 22 18 / 0.35);
+    padding: 0.7rem 0.85rem;
+    font-size: 0.78rem;
+    color: #f3c9c4;
+  }
+}
+
+/* ------------------------------------------------------------------
+   Motion (all of it switched off for reduced-motion users below)
+   ------------------------------------------------------------------ */
 @keyframes reactionFloat {
   0% {
     transform: translateY(0) scale(0.7) rotate(0deg);
@@ -69,7 +256,57 @@
   animation: reactionFloat 1.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Subtle Cinema Ambient Backlight */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-up {
+  animation: fadeUp 0.35s var(--ease-cinema) both;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.animate-fade-in {
+  animation: fadeIn 0.25s ease-out both;
+}
+
+/* The video frame: soft warm light around the screen */
 .cinema-ambient-glow {
-  box-shadow: 0 0 60px -15px rgba(139, 92, 246, 0.25), 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 0 70px -25px rgb(242 160 80 / 0.22), 0 30px 60px -20px rgb(0 0 0 / 0.9);
+}
+
+/* Hide scrollbars on horizontal poster rows (still scrollable) */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Range inputs (video progress, volume) in gold */
+.range-gold {
+  accent-color: var(--color-gold);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

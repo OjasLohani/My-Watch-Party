@@ -1,15 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
-import { 
-  ArrowLeft, 
-  Copy, 
-  Check, 
-  MessageSquare, 
-  ListMusic, 
-  Vote,
-  LogOut
-} from 'lucide-react';
+import { MessageSquare, Users, Smile, ListVideo, Vote, MonitorPlay } from 'lucide-react';
 import type { Room, User, Movie, PlaylistItem, ChatMessage, Poll, FloatingReaction } from '../../types';
 import type { RealtimeStatus } from '../../hooks/useRoomRealtime';
+import { REACTION_EMOJIS } from '../../lib/reactions';
 import { VideoPlayer, type PlaybackSyncProps } from './VideoPlayer';
 import { ChatPanel } from './ChatPanel';
 import { PlaylistPanel } from './PlaylistPanel';
@@ -18,6 +11,8 @@ import { ParticipantsList } from './ParticipantsList';
 import { FloatingReactions } from './FloatingReactions';
 import { LeaveRoomDialog } from './LeaveRoomDialog';
 import { AddYouTubeDialog } from './AddYouTubeDialog';
+import { RoomHeader } from './RoomHeader';
+import { Artwork } from '../ui/Artwork';
 
 interface WatchRoomScreenProps {
   room: Room;
@@ -43,6 +38,10 @@ interface WatchRoomScreenProps {
   onTransferHost: (targetUserId: string) => void;
   onSimulateDrift: () => void;
   onOpenDiscover: () => void;
+  /** Opens the "change your name" dialog */
+  onEditName?: () => void;
+  /** Demo rooms only: switch between host and viewer */
+  onToggleHostRole?: () => void;
   floatingReactions: FloatingReaction[];
   /** Shared playback wiring (real rooms only) */
   playbackSync?: PlaybackSyncProps;
@@ -52,7 +51,11 @@ interface WatchRoomScreenProps {
   onClaimHost?: () => void;
 }
 
-type TabType = 'chat' | 'playlist' | 'poll';
+type TabType = 'chat' | 'people' | 'reactions' | 'playlist' | 'poll';
+
+const REACTION_NAMES: Record<string, string> = {
+  '🔥': 'Fire', '❤️': 'Love', '🍿': 'Popcorn', '🚀': 'Rocket', '😱': 'Shocked', '👏': 'Applause',
+};
 
 export function WatchRoomScreen({
   room,
@@ -76,6 +79,8 @@ export function WatchRoomScreen({
   onTransferHost,
   onSimulateDrift,
   onOpenDiscover,
+  onEditName,
+  onToggleHostRole,
   floatingReactions,
   playbackSync,
   connectionStatus,
@@ -113,226 +118,261 @@ export function WatchRoomScreen({
 
   // Everyone's current name, so chat and the queue show renamed people correctly
   const nameById = useMemo(() => new Map(members.map((m) => [m.id, m.name])), [members]);
+  const onlineCount = members.filter((m) => m.isOnline !== false).length;
 
   const tabs: { id: TabType; label: string; icon: typeof MessageSquare }[] = [
-    { id: 'chat', label: 'Live Chat', icon: MessageSquare },
-    { id: 'playlist', label: `Queue (${playlist.length})`, icon: ListMusic },
-    { id: 'poll', label: 'Club Poll', icon: Vote },
+    { id: 'chat', label: 'Chat', icon: MessageSquare },
+    { id: 'people', label: 'Participants', icon: Users },
+    { id: 'reactions', label: 'Reactions', icon: Smile },
+    { id: 'playlist', label: `Queue (${playlist.length})`, icon: ListVideo },
+    { id: 'poll', label: 'Polls', icon: Vote },
   ];
 
   const handleCopyInviteLink = async () => {
     const inviteUrl = `${window.location.origin}/?room=${room.code}`;
     try {
       await navigator.clipboard.writeText(inviteUrl);
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2200);
     } catch {
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2200);
+      // clipboard blocked: the code stays visible in the header
     }
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2200);
   };
 
+  const isYouTube = currentMovie.source === 'youtube';
+
   return (
-    <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-      {/* Top Room Banner Bar */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/[0.08] bg-[#0A0C13] p-4 shadow-xl">
-        <div className="flex min-w-0 items-center gap-3">
-          <button
-            type="button"
-            onClick={onOpenDiscover}
-            aria-label="Browse the library (you stay in the room)"
-            title="Browse the library. You stay in the room; use Leave Room to leave."
-            className="flex shrink-0 items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            <span>Library</span>
-          </button>
+    <>
+      <RoomHeader
+        room={room}
+        currentUser={currentUser}
+        onlineCount={onlineCount}
+        memberCount={members.length}
+        connectionStatus={connectionStatus}
+        copiedLink={copiedLink}
+        onCopyInvite={() => void handleCopyInviteLink()}
+        onOpenDiscover={onOpenDiscover}
+        onLeave={openLeaveDialog}
+        onEditName={onEditName}
+        onToggleHostRole={onToggleHostRole}
+      />
 
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-base font-bold text-white sm:text-lg tracking-tight">
-                {room.name}
-              </h1>
-              <span className="rounded-md bg-white/[0.05] border border-white/[0.08] px-2 py-0.5 text-[10px] font-bold text-slate-300">
-                {room.isPrivate ? 'Private Room' : 'Public Screening'}
-              </span>
-              {room.isMockData && (
-                <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                  Offline / Local Mode
-                </span>
-              )}
-              {connectionStatus === 'reconnecting' && (
-                <span className="rounded-md bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                  Reconnecting…
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-slate-400 truncate max-w-md">
-              Screening: <span className="text-slate-200 font-semibold">{currentMovie.title}</span> ({currentMovie.year})
-            </p>
-            {currentMovie.videoCredit && (
-              <p className="text-[10px] text-slate-500 truncate max-w-md" title={currentMovie.videoCredit}>
-                Video: {currentMovie.videoCredit}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* Room Code & Copy Invite Link */}
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={openLeaveDialog}
-            className="flex items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-950/20 px-3.5 py-2 text-xs font-semibold text-red-200 hover:bg-red-900/30 transition-colors"
-          >
-            <LogOut className="h-3.5 w-3.5" />
-            <span>Leave Room</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleCopyInviteLink}
-            className="flex items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-950/20 px-3.5 py-2 font-mono text-xs text-violet-200 hover:bg-violet-900/30 transition-colors"
-            title="Click to copy full invite link for sharing"
-          >
-            <span className="text-violet-400 font-semibold">CODE:</span>
-            <span className="font-bold">{room.code}</span>
-            {copiedLink ? (
-              <span className="text-emerald-400 font-sans text-xs flex items-center gap-1">
-                <Check className="h-3.5 w-3.5" />
-                Invite Link Copied!
-              </span>
-            ) : (
-              <Copy className="h-3.5 w-3.5 text-violet-400" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* The host disappeared (closed laptop, lost connection) */}
-      {hostAway && (
-        <div
-          role="status"
-          className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-200"
-        >
-          <span>
-            <strong className="font-semibold">{hostAway.hostName}</strong> (host) disconnected. If they do not come back
-            within a few seconds, hosting passes automatically to the next person in the room.
-          </span>
-          {onClaimHost && hostAway.canClaim && (
-            <button
-              type="button"
-              onClick={onClaimHost}
-              className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 font-semibold text-amber-100 hover:bg-amber-500/20 transition-colors"
-            >
-              Take over hosting
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Main Cinema Grid */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Left 2 Columns: Video Player & Participants */}
-        <div className="space-y-5 lg:col-span-2">
-          {/* Cinema Frame with floating reactions */}
-          <div className="relative">
-            <VideoPlayer
-              // A fresh player when switching between files and YouTube videos
-              key={currentMovie.source === 'youtube' ? currentMovie.id : 'file'}
-              movie={currentMovie}
-              isHost={currentUser.isHost}
-              room={room}
-              currentUser={currentUser}
-              driftMs={driftMs}
-              onSimulateDrift={onSimulateDrift}
-              sync={playbackSync}
-            />
-            {/* Smooth floating reactions overlay */}
-            <FloatingReactions reactions={floatingReactions} />
-          </div>
-
-          {/* Active Members row */}
-          <ParticipantsList
-            members={members}
-            currentUserId={currentUser.id}
-            isHost={currentUser.isHost}
-            onTransferHost={onTransferHost}
-          />
-        </div>
-
-        {/* Right 1 Column: Interactive Cinema Multi-Tab Side Panel */}
-        <div className="flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0A0C13] shadow-2xl h-[520px] lg:h-[590px]">
-          {/* Unified Tab Navigation (arrow keys move between tabs) */}
-          <div className="flex border-b border-white/[0.06] bg-[#07080E]" role="tablist" aria-label="Room panels">
-            {tabs.map((tab, i) => (
-              <button
-                key={tab.id}
-                id={`room-tab-${tab.id}`}
-                type="button"
-                role="tab"
-                aria-selected={activeTab === tab.id}
-                aria-controls="room-tab-panel"
-                tabIndex={activeTab === tab.id ? 0 : -1}
-                onClick={() => setActiveTab(tab.id)}
-                onKeyDown={(e) => {
-                  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-                  const next = tabs[(i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
-                  setActiveTab(next.id);
-                  document.getElementById(`room-tab-${next.id}`)?.focus();
-                }}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-3.5 text-xs font-semibold tracking-wide transition-all border-b-2 ${
-                  activeTab === tab.id
-                    ? 'border-violet-500 text-white bg-white/[0.02]'
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <tab.icon className="h-3.5 w-3.5 text-violet-400" />
-                <span>{tab.label}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Active Tab Panel */}
+      <div className="mx-auto w-full max-w-[1440px] px-3 pb-10 pt-4 sm:px-6 sm:pt-5">
+        {/* The host disappeared (closed laptop, lost connection) */}
+        {hostAway && (
           <div
-            className="flex-1 overflow-hidden"
-            id="room-tab-panel"
-            role="tabpanel"
-            aria-labelledby={`room-tab-${activeTab}`}
+            role="status"
+            className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gold-muted/40 bg-gold/[0.06] px-4 py-3 text-xs text-ivory/90"
           >
-            {activeTab === 'chat' && (
-              <ChatPanel
-                messages={chatMessages}
+            <span>
+              <strong className="font-semibold text-gold">{hostAway.hostName}</strong> (host) disconnected. If they do not come back
+              within a few seconds, hosting passes automatically to the next person in the room.
+            </span>
+            {onClaimHost && hostAway.canClaim && (
+              <button type="button" onClick={onClaimHost} className="btn-gold h-8 px-3 text-xs">
+                Take over hosting
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,400px)]">
+          {/* Player and quick reactions */}
+          <div className="min-w-0 space-y-3">
+            <div className="relative">
+              <VideoPlayer
+                // A fresh player when switching between files and YouTube videos
+                key={isYouTube ? currentMovie.id : 'file'}
+                movie={currentMovie}
+                isHost={currentUser.isHost}
+                room={room}
                 currentUser={currentUser}
-                onSendMessage={onSendMessage}
-                onTriggerReaction={onTriggerReaction}
-                nameById={nameById}
+                driftMs={driftMs}
+                onSimulateDrift={onSimulateDrift}
+                sync={playbackSync}
               />
-            )}
+              <FloatingReactions reactions={floatingReactions} />
+            </div>
 
-            {activeTab === 'playlist' && (
-              <PlaylistPanel
-                playlist={playlist}
-                currentMovieId={currentMovie.id}
-                isHost={currentUser.isHost}
-                onSelectMovie={onSelectMovieFromPlaylist}
-                onOpenDiscover={onOpenDiscover}
-                onRemoveItem={onRemoveFromPlaylist}
-                onMoveItem={onMovePlaylistItem}
-                nameById={nameById}
-                onAddYouTube={onAddYouTube ? () => setIsYouTubeDialogOpen(true) : undefined}
-              />
-            )}
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Quick reactions">
+              {REACTION_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => onTriggerReaction(emoji)}
+                  className="flex h-11 w-11 items-center justify-center rounded-full border border-bronze bg-surface text-xl transition-[transform,border-color] hover:-translate-y-0.5 hover:border-gold-muted active:scale-95"
+                  title={`Send ${emoji} reaction`}
+                  aria-label={`Send ${emoji} reaction`}
+                >
+                  {emoji}
+                </button>
+              ))}
+              <span className="ml-1 hidden text-[11px] text-ash sm:inline">Reactions float over everyone's screen</span>
+            </div>
+          </div>
 
-            {activeTab === 'poll' && (
-              <PollPanel
-                key={poll?.id ?? 'no-poll'}
-                poll={poll}
-                isHost={currentUser.isHost}
-                onVoteCast={onVoteCast}
-                onCreatePoll={onCreatePoll}
-                onClosePoll={onClosePoll}
-              />
-            )}
+          {/* Room panels; on large screens exactly as tall as the player column */}
+          <aside className="relative h-[540px] lg:h-auto" aria-label="Chat and room tools">
+            <div className="panel flex h-full flex-col overflow-hidden rounded-2xl lg:absolute lg:inset-0">
+              <div
+                className="no-scrollbar flex shrink-0 overflow-x-auto border-b border-bronze-soft px-2"
+                role="tablist"
+                aria-label="Room panels"
+              >
+                {tabs.map((tab, i) => {
+                  const selected = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      id={`room-tab-${tab.id}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      aria-controls="room-tab-panel"
+                      tabIndex={selected ? 0 : -1}
+                      onClick={() => setActiveTab(tab.id)}
+                      onKeyDown={(e) => {
+                        const keys: Record<string, number> = { ArrowRight: 1, ArrowLeft: tabs.length - 1, Home: -i, End: tabs.length - 1 - i };
+                        if (!(e.key in keys)) return;
+                        e.preventDefault();
+                        const next = tabs[(i + keys[e.key] + tabs.length) % tabs.length];
+                        setActiveTab(next.id);
+                        document.getElementById(`room-tab-${next.id}`)?.focus();
+                      }}
+                      className={`relative flex shrink-0 grow items-center justify-center px-3 py-3.5 text-xs transition-colors sm:px-2.5 ${
+                        selected ? 'font-semibold text-gold' : 'text-ash hover:text-ivory'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      <span
+                        aria-hidden="true"
+                        className={`absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-gold transition-opacity ${selected ? 'opacity-100' : 'opacity-0'}`}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div
+                className="min-h-0 flex-1 overflow-hidden"
+                id="room-tab-panel"
+                role="tabpanel"
+                aria-labelledby={`room-tab-${activeTab}`}
+              >
+                {activeTab === 'chat' && (
+                  <ChatPanel
+                    messages={chatMessages}
+                    currentUser={currentUser}
+                    onSendMessage={onSendMessage}
+                    nameById={nameById}
+                    hostId={room.hostId}
+                  />
+                )}
+
+                {activeTab === 'people' && (
+                  <ParticipantsList
+                    variant="list"
+                    members={members}
+                    currentUserId={currentUser.id}
+                    isHost={currentUser.isHost}
+                    onTransferHost={onTransferHost}
+                    onInvite={() => void handleCopyInviteLink()}
+                    inviteCopied={copiedLink}
+                  />
+                )}
+
+                {activeTab === 'reactions' && (
+                  <div className="flex h-full flex-col p-4">
+                    <h3 className="text-sm font-semibold text-ivory">Reactions</h3>
+                    <p className="mt-1 text-xs text-ash">Tap to send. They float over the screen for everyone in the room.</p>
+                    <div className="mt-4 grid grid-cols-3 gap-2.5">
+                      {REACTION_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          onClick={() => onTriggerReaction(emoji)}
+                          className="flex flex-col items-center gap-1 rounded-xl border border-bronze bg-ink/40 py-3 transition-colors hover:border-gold-muted hover:bg-gold/[0.05] active:scale-95"
+                          aria-label={`Send ${emoji} reaction`}
+                        >
+                          <span className="text-2xl" aria-hidden="true">{emoji}</span>
+                          <span className="text-[11px] text-ash">{REACTION_NAMES[emoji] ?? ''}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'playlist' && (
+                  <PlaylistPanel
+                    playlist={playlist}
+                    currentMovieId={currentMovie.id}
+                    isHost={currentUser.isHost}
+                    onSelectMovie={onSelectMovieFromPlaylist}
+                    onOpenDiscover={onOpenDiscover}
+                    onRemoveItem={onRemoveFromPlaylist}
+                    onMoveItem={onMovePlaylistItem}
+                    nameById={nameById}
+                    onAddYouTube={onAddYouTube ? () => setIsYouTubeDialogOpen(true) : undefined}
+                  />
+                )}
+
+                {activeTab === 'poll' && (
+                  <div className="h-full overflow-y-auto">
+                    <PollPanel
+                      key={poll?.id ?? 'no-poll'}
+                      poll={poll}
+                      isHost={currentUser.isHost}
+                      onVoteCast={onVoteCast}
+                      onCreatePoll={onCreatePoll}
+                      onClosePoll={onClosePoll}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+
+          {/* Now watching and the people in the room */}
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:col-span-2">
+            <section aria-label="Now watching" className="panel flex min-w-0 items-center gap-4 rounded-2xl p-3">
+              <span className="relative aspect-video w-28 shrink-0 overflow-hidden rounded-lg border border-bronze bg-surface-2 sm:w-32">
+                <Artwork sources={[currentMovie.posterUrl, currentMovie.backdropUrl]} alt="" className="h-full w-full object-cover" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[11px] text-ash">Now Watching</p>
+                <p className="truncate font-display text-lg font-medium text-ivory" title={currentMovie.title}>
+                  {currentMovie.title}
+                </p>
+                <p className="flex flex-wrap items-center gap-x-2 text-xs text-ash">
+                  {isYouTube ? (
+                    <span className="inline-flex items-center gap-1 text-ivory/85">
+                      <MonitorPlay className="h-3.5 w-3.5 text-gold" aria-hidden="true" />
+                      YouTube video
+                    </span>
+                  ) : (
+                    <>
+                      {currentMovie.year > 0 && <span>{currentMovie.year}</span>}
+                      {currentMovie.duration && <span>{currentMovie.duration}</span>}
+                      {currentMovie.category && <span>{currentMovie.category}</span>}
+                    </>
+                  )}
+                </p>
+                {currentMovie.videoCredit && (
+                  <p className="mt-0.5 truncate text-[10px] text-ash-muted" title={currentMovie.videoCredit}>
+                    Video: {currentMovie.videoCredit}
+                  </p>
+                )}
+              </div>
+            </section>
+
+            <ParticipantsList
+              members={members}
+              currentUserId={currentUser.id}
+              isHost={currentUser.isHost}
+              onTransferHost={onTransferHost}
+              onInvite={() => void handleCopyInviteLink()}
+              inviteCopied={copiedLink}
+            />
           </div>
         </div>
       </div>
@@ -350,6 +390,6 @@ export function WatchRoomScreen({
           onConfirm={() => void confirmLeave()}
         />
       )}
-    </div>
+    </>
   );
 }

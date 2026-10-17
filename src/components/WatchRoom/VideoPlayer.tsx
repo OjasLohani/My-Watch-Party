@@ -717,7 +717,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
       onFocus={() => setShowControls(true)}
       onMouseEnter={() => setShowControls(true)}
       onMouseLeave={() => setShowControls(false)}
-      className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-white/[0.12] bg-black cinema-ambient-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+      className="group relative aspect-video w-full overflow-hidden rounded-2xl border border-bronze bg-black cinema-ambient-glow focus:outline-none focus-visible:ring-2 focus-visible:ring-gold"
     >
       {/* Video Element (file) or YouTube player */}
       {isYouTube ? (
@@ -758,10 +758,10 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
 
       {/* Fallback Display if video cannot load in preview */}
       {hasError && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-6 text-center z-20 backdrop-blur-md">
-          <AlertCircle className="h-10 w-10 text-amber-400" />
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-ink/95 p-6 text-center z-20 backdrop-blur-md">
+          <AlertCircle className="h-10 w-10 text-gold" />
           <h4 className="mt-2 text-sm font-bold text-white">Video unavailable</h4>
-          <p className="mt-1 max-w-sm text-xs text-slate-400">
+          <p className="mt-1 max-w-sm text-xs text-ash">
             “{movie.title}” could not be loaded — {failure?.reason}
             {!isYouTube && sources.length > 1 ? ` (tried ${sources.length} sources)` : ''}.
             {isYouTube && failure?.reason && !/connection|blocker/.test(failure.reason)
@@ -772,7 +772,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
           <button
             type="button"
             onClick={retryFromFirstSource}
-            className="mt-4 rounded-xl border border-violet-500/30 bg-violet-600/20 px-4 py-2 text-xs font-semibold text-violet-300 hover:bg-violet-600/30"
+            className="mt-4 rounded-xl border border-gold-muted/50 bg-gold/10 px-4 py-2 text-xs font-semibold text-gold hover:bg-gold/20"
           >
             Try Again
           </button>
@@ -781,33 +781,30 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
 
       {/* Top Floating Cinema HUD */}
       <div
-        className={`absolute top-0 inset-x-0 z-20 flex items-center justify-between p-4 bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 ${
+        className={`absolute top-0 inset-x-0 z-20 flex items-center justify-between gap-2 p-2.5 sm:p-4 bg-gradient-to-b from-black/85 via-black/40 to-transparent transition-opacity duration-300 ${
           showControls ? 'opacity-100' : 'opacity-0'
         }`}
       >
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-black/60 px-3 py-1.5 backdrop-blur-md">
-            <span className="text-xs font-bold text-white tracking-wide">
-              {movie.title}
-            </span>
-            <span className="text-white/20">•</span>
-            <span className="text-[10px] text-slate-400 font-mono">
-              {movie.category}
-            </span>
-          </div>
+          <span className="shrink-0 whitespace-nowrap rounded-full border border-ivory/40 bg-ink/60 px-2.5 py-1 text-[10px] font-medium text-ivory backdrop-blur-md sm:px-3 sm:text-[11px]">
+            Now Playing
+          </span>
+          <span className="hidden max-w-[16rem] truncate text-xs font-medium text-ivory/90 [text-shadow:0_1px_6px_rgb(0_0_0/0.8)] sm:inline">
+            {movie.title}
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
           {/* Host indicator - shows who controls playback */}
           <div
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-semibold backdrop-blur-md ${
+            className={`flex items-center gap-1.5 whitespace-nowrap rounded-lg border px-2 py-1.5 text-[11px] font-semibold backdrop-blur-md sm:px-3 ${
               isHost
-                ? 'border-violet-500/30 bg-violet-950/60 text-violet-200'
-                : 'border-white/10 bg-black/60 text-slate-300'
+                ? 'border-gold-muted/50 bg-ink/70 text-gold'
+                : 'border-ivory/15 bg-ink/60 text-ivory/85'
             }`}
           >
-            <Shield className="h-3 w-3 text-amber-400" />
-            <span>{isHost ? 'Host Controls Active' : 'Synced to Host'}</span>
+            <Shield className="h-3 w-3 text-gold" />
+            <span className="sr-only sm:not-sr-only">{isHost ? 'Host Controls Active' : 'Synced to Host'}</span>
           </div>
 
           {/* Real-time Drift Meter */}
@@ -815,14 +812,14 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
             type="button"
             onClick={handleDriftClick}
             title={isSynced ? `Click to re-sync now${statsTitle}` : 'Click to simulate network drift calibration'}
-            className="flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-black/60 px-3 py-1.5 text-[11px] font-mono text-emerald-300 backdrop-blur-md hover:bg-emerald-950/40 transition-colors"
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-success/40 bg-ink/60 px-2 py-1 text-[10px] sm:px-3 sm:py-1.5 sm:text-[11px] font-mono text-success backdrop-blur-md hover:bg-success/10 transition-colors"
           >
             <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75"></span>
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success"></span>
             </span>
             <span>{isSynced ? syncedDriftLabel : `${driftMs}ms Drift`}</span>
-            <RefreshCw className="h-3 w-3 text-emerald-400 ml-1" />
+            <RefreshCw className="hidden h-3 w-3 text-success ml-1 sm:block" />
           </button>
         </div>
       </div>
@@ -832,7 +829,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
         <button
           type="button"
           onClick={joinPlayback}
-          className="absolute inset-0 z-10 m-auto flex h-fit w-fit flex-col items-center gap-2 rounded-2xl border border-white/20 bg-black/70 px-6 py-5 text-white shadow-2xl backdrop-blur-md transition-all hover:border-violet-400/50 hover:bg-violet-600/40"
+          className="absolute inset-0 z-10 m-auto flex h-fit w-fit flex-col items-center gap-2 rounded-2xl border border-white/20 bg-black/70 px-6 py-5 text-white shadow-2xl backdrop-blur-md transition-all hover:border-gold hover:bg-ink/80"
         >
           <Play className="h-8 w-8 fill-white" />
           <span className="text-xs font-semibold">The host is playing — click to join</span>
@@ -856,15 +853,15 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
           type="button"
           onClick={togglePlay}
           aria-label="Play video"
-          className="absolute inset-0 z-10 m-auto flex h-20 w-20 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-2xl backdrop-blur-md transition-all duration-300 hover:scale-110 hover:bg-violet-600/80 hover:border-violet-400/50"
+          className="absolute inset-0 z-10 m-auto flex h-14 w-14 sm:h-20 sm:w-20 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-2xl backdrop-blur-md transition-all duration-300 hover:scale-110 hover:bg-gold hover:text-ink hover:border-gold"
         >
-          <Play className="h-8 w-8 fill-white translate-x-0.5" />
+          <Play className="h-6 w-6 sm:h-8 sm:w-8 fill-current translate-x-0.5" />
         </button>
       )}
 
       {/* Short notices (e.g. "Only the host controls playback") */}
       {hint && (
-        <div className="absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg border border-white/10 bg-black/80 px-3 py-1.5 text-[11px] font-semibold text-slate-200 backdrop-blur-md">
+        <div className="absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-lg border border-bronze bg-ink/85 px-3 py-1.5 text-[11px] font-semibold text-ivory backdrop-blur-md">
           {hint}
         </div>
       )}
@@ -891,7 +888,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
             onBlur={handleScrubEnd}
             disabled={controlsLocked}
             aria-label="Seek"
-            className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-white/20 accent-violet-400 transition-all group-hover/scrubber:h-2 disabled:cursor-not-allowed"
+            className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-white/20 accent-[#f2d27b] transition-all group-hover/scrubber:h-2 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -912,7 +909,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
             <button
               type="button"
               onClick={handleRestart}
-              className="rounded-lg p-1.5 text-slate-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40"
+              className="rounded-lg p-1.5 text-ivory/85 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40"
               title={controlsLocked ? 'Only the host controls playback' : 'Restart from beginning'}
               aria-label="Restart video"
               disabled={controlsLocked}
@@ -925,11 +922,11 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
               <button
                 type="button"
                 onClick={toggleMute}
-                className="rounded-lg p-1.5 text-slate-300 hover:text-white hover:bg-white/10 transition-colors"
+                className="rounded-lg p-1.5 text-ivory/85 hover:text-white hover:bg-white/10 transition-colors"
                 aria-label={isMuted ? 'Unmute' : 'Mute'}
               >
                 {isMuted || volume === 0 ? (
-                  <VolumeX className="h-4 w-4 text-red-400" />
+                  <VolumeX className="h-4 w-4 text-danger-bright" />
                 ) : (
                   <Volume2 className="h-4 w-4" />
                 )
@@ -942,12 +939,12 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
                 step={0.05}
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
-                className="h-1 w-14 sm:w-20 cursor-pointer appearance-none rounded-lg bg-white/20 accent-violet-400"
+                className="h-1 w-14 sm:w-20 cursor-pointer appearance-none rounded-lg bg-white/20 accent-[#f2d27b]"
               />
             </div>
 
             {/* Time Stamp */}
-            <span className="font-mono text-xs text-slate-300 tracking-wider">
+            <span className="font-mono text-xs text-ivory/85 tracking-wider">
               {formatTime(currentTime)} / {formatTime(duration)}
             </span>
           </div>
@@ -956,7 +953,7 @@ export function VideoPlayer({ movie, isHost, currentUser, driftMs, onSimulateDri
             <button
               type="button"
               onClick={toggleFullscreen}
-              className="rounded-lg p-1.5 text-slate-300 hover:text-white hover:bg-white/10 transition-colors"
+              className="rounded-lg p-1.5 text-ivory/85 hover:text-white hover:bg-white/10 transition-colors"
               aria-label="Toggle Fullscreen"
             >
               {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}

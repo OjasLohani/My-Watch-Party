@@ -1,4 +1,4 @@
-import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X, AlertTriangle } from 'lucide-react';
 import type { Toast } from '../types';
 
 interface ToastContainerProps {
@@ -6,40 +6,35 @@ interface ToastContainerProps {
   onDismiss: (id: string) => void;
 }
 
+const ICONS = {
+  success: { icon: CheckCircle2, tone: 'text-success' },
+  error: { icon: AlertCircle, tone: 'text-danger-bright' },
+  warning: { icon: AlertTriangle, tone: 'text-gold' },
+  info: { icon: Info, tone: 'text-gold-muted' },
+};
+
 export function ToastContainer({ toasts, onDismiss }: ToastContainerProps) {
   // Always rendered: screen readers only announce changes to a live
   // region that already exists on the page.
   return (
     <div
-      className="fixed bottom-5 right-5 z-[100] flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4"
+      className="pointer-events-none fixed bottom-20 right-0 z-[100] flex w-full max-w-sm flex-col gap-2 px-4 md:bottom-5 md:right-5"
       role="status"
       aria-live="polite"
     >
       {toasts.map((toast) => {
-        const isSuccess = toast.type === 'success';
-        const isError = toast.type === 'error';
-
+        const { icon: Icon, tone } = ICONS[toast.type ?? 'info'];
         return (
           <div
             key={toast.id}
-            className="pointer-events-auto flex items-start gap-3 rounded-xl border border-white/[0.12] bg-[#0A0C13]/95 p-3.5 shadow-2xl backdrop-blur-2xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-2"
+            className="pointer-events-auto flex items-start gap-3 rounded-xl border border-bronze bg-surface/95 p-3.5 shadow-[0_20px_40px_-16px_rgb(0_0_0/0.9)] backdrop-blur-md animate-fade-up"
           >
-            <div className="mt-0.5 shrink-0">
-              {isSuccess ? (
-                <CheckCircle2 className="h-4.5 w-4.5 text-emerald-400" />
-              ) : isError ? (
-                <AlertCircle className="h-4.5 w-4.5 text-rose-400" />
-              ) : (
-                <Info className="h-4.5 w-4.5 text-violet-400" />
-              )}
-            </div>
-            <p className="flex-1 text-xs sm:text-sm font-medium leading-snug text-slate-200">
-              {toast.message}
-            </p>
+            <Icon className={`mt-0.5 h-4.5 w-4.5 shrink-0 ${tone}`} aria-hidden="true" />
+            <p className="flex-1 text-[13px] font-medium leading-snug text-ivory">{toast.message}</p>
             <button
               type="button"
               onClick={() => onDismiss(toast.id)}
-              className="text-slate-400 hover:text-white transition-colors"
+              className="text-ash transition-colors hover:text-ivory"
               aria-label="Close notification"
             >
               <X className="h-4 w-4" />
